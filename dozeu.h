@@ -1,7 +1,7 @@
 // $(CC) -O3 -march=native -DMAIN -o dozeu dozeu.c
 
 /**
- * @file dozeu.c
+ * @file dozeu.h
  * @brief SIMD X-drop DP for read-to-graph alignment
  *
  * @author Hajime Suzuki
@@ -9,11 +9,16 @@
  * @license MIT
  *
  * @datail
- * BLAST X-drop DP
- * https://github.com/elucify/blast-docs/wiki/The-Developer's-Guide-to-BLAST
+ * minimum requirements:
+ *   SSSE3 (Core 2 / Bobcat or later)
+ *   { gcc, clang, icc } x { Linux, Mac OS }
+ * input sequence must be null-terminated array of {'A','C','G','T','a','c','g','t'}, otherwise undefined, not required to be terminated with '\0'.
  *
- * only for SSE4.2 b/c vertical parallelization is not so efficient for long vectors.
- * input sequence must be null-terminated array of {'A','C','G','T','a','c','g','t'}, otherwise undefined
+ * BLAST X-drop DP
+ *   https://github.com/elucify/blast-docs/wiki/The-Developer's-Guide-to-BLAST (the most datailed document that describes the original X-drop DP algorithm)
+ *
+ * Myers bit vector (describes vertical (horizontal) tiling)
+ *   Gene Myers, A fast bit-vector algorithm for approximate string matching based on dynamic programming, JACM (1999)
  */
 #include <assert.h>
 #include <stdint.h>
@@ -38,6 +43,10 @@ enum dz_alphabet { A = 0x00, C = 0x01, G = 0x02, T = 0x03, N = 0x04 };		/* inter
 #define dz_max2(x, y)				( (x) < (y) ? (y) : (x) )
 #define dz_min2(x, y)				( (x) < (y) ? (x) : (y) )
 
+#define dz_sa_cat_intl(x, y)		x##y
+#define dz_sa_cat(x, y)				dz_sa_cat_intl(x, y)
+#define dz_static_assert(expr)		typedef char dz_sa_cat(_st, __LINE__)[(expr) ? 1 : -1]
+
 #define DZ_MEM_MARGIN_SIZE			( 256 )
 #define DZ_MEM_ALIGN_SIZE			( 16 )
 #define DZ_MEM_INIT_SIZE			( 16 * 1024 * 1024 )
@@ -50,10 +59,15 @@ enum dz_alphabet { A = 0x00, C = 0x01, G = 0x02, T = 0x03, N = 0x04 };		/* inter
 
 /* query */
 struct dz_query_s { uint64_t blen, _pad; uint8_t arr[]; };		/* preconverted query sequence; blen = roundup(qlen, L) / L; array must have 16-byte-length margin at the tail */
+dz_static_assert(sizeof(struct dz_query_s) % sizeof(__m128i) == 0);
 
 /* DP matrix structures */
 struct dz_swgv_s { __m128i e, f, s; };							/* followed by dz_cap_s */
-struct dz_cap_s { uint64_t spos, epos, max, inc; };				/* followed by dz_swgv_s */
+struct dz_cap_s { uint32_t spos, epos, _pad[2]; };				/* followed by dz_tail_s */
+struct dz_tail_s { uint32_t spos, epos; uint64_t max, inc; struct dz_cap_s const *cap; };
+dz_static_assert(sizeof(struct dz_swgv_s) % sizeof(__m128i) == 0);
+dz_static_assert(sizeof(struct dz_cap_s) % sizeof(__m128i) == 0);
+dz_static_assert(sizeof(struct dz_tail_s) % sizeof(__m128i) == 0);
 
 /* context (constants and working buffers) */
 struct dz_mem_block_s { struct dz_mem_block_s *next; size_t size; };
@@ -61,9 +75,10 @@ struct dz_stack_s { struct dz_mem_block_s *curr; uint8_t *top, *end; uint64_t _p
 struct dz_mem_s { struct dz_mem_block_s blk; struct dz_stack_s stack; };
 #define dz_mem_stack_rem(_mem)		( (size_t)((_mem)->stack.end - (_mem)->stack.top) )
 
-struct dz_s { int8_t matrix[16]; uint16_t giv[8], gev[8], xt, _pad[11]; struct dz_cap_s const *root; };
+struct dz_s { int8_t matrix[16]; uint16_t giv[8], gev[8], xt, _pad[11]; struct dz_tail_s const *root; };
+dz_static_assert(sizeof(struct dz_s) % sizeof(__m128i) == 0);
 #define dz_mem(_self)				( (struct dz_mem_s *)(_self) - 1 )
-#define dz_root(_self)				( (struct dz_cap_s const *const *)(&_self->root) )
+#define dz_root(_self)				( (struct dz_tail_s const *const *)(&_self->root) )
 
 #define print_vector(v) { \
 	debug("%s (%d, %d, %d, %d, %d, %d, %d, %d)", #v, \
@@ -214,13 +229,13 @@ unittest() {
 	(struct dz_swgv_s *)dz_roundup(_p, sizeof(__m128i)); \
 })
 #define _load_vector(_p) \
-	__m128i e = _mm_load_si128((__m128i const *)(&((struct dz_swgv_s const *)(_p))->e)); /* print_vector(e); */ \
-	__m128i s = _mm_load_si128((__m128i const *)(&((struct dz_swgv_s const *)(_p))->s)); /* print_vector(s); */
+	__m128i e = _mm_load_si128((__m128i const *)(&((struct dz_swgv_s const *)(_p))->e)); print_vector(e); \
+	__m128i s = _mm_load_si128((__m128i const *)(&((struct dz_swgv_s const *)(_p))->s)); print_vector(s);
 #define _update_vector(_p) { \
 	__m128i rv = _mm_set1_epi8(conv[*rp & 0x0f]), qv = _mm_loadl_epi64((__m128i const *)&qp[(_p) * L]); \
 	__m128i sc = _mm_cvtepi8_epi16(_mm_shuffle_epi8(_mm_load_si128((__m128i const *)self->matrix), _mm_or_si128(rv, qv))); print_vector(sc); \
 	__m128i te = _mm_subs_epi16(_mm_max_epi16(e, _mm_subs_epi16(s, giv)), gev1); \
-	/* print_vector(_mm_alignr_epi8(s, ps, 14)); */ \
+	 print_vector(_mm_alignr_epi8(s, ps, 14));  \
 	__m128i ts = _mm_max_epi16(te, _mm_adds_epi16(sc, _mm_alignr_epi8(s, ps, 14))); ps = s; \
 	__m128i tf = _mm_max_epi16(_mm_subs_epi16(ts, giv), _mm_subs_epi16(_mm_alignr_epi8(minv, f, 14), gev1)); \
 	tf = _mm_max_epi16(tf, _mm_subs_epi16(_mm_alignr_epi8(tf, minv, 14), gev1)); \
@@ -246,6 +261,12 @@ unittest() {
 	__m128i xtest = _mm_cmpgt_epi16(_s, _xtv); \
 	/* print_vector(_s); print_vector(_xtv); */ \
 	_mm_test_all_zeros(xtest, xtest); \
+})
+#define _push_cap(_p) ({ \
+	struct dz_cap_s *cap = (struct dz_cap_s *)&(_p)[w.epos]; \
+	cap->spos = w.spos; cap->epos = w.epos; \
+	dz_mem(self)->stack.top = (uint8_t *)(cap + 1); \
+	cap; \
 })
 
 /**
@@ -279,23 +300,24 @@ struct dz_s *dz_init(
 	struct dz_swgv_s *dp = _alloc_column(max_gap_len / L);
 
 	/* cap object is placed at the tail of the last column */
-	struct dz_cap_s cap = { .epos = max_gap_len / L };
+	struct dz_tail_s w = { .epos = max_gap_len / L };
 
 	/* fill the root (the leftmost) column */
 	__m128i s = _mm_setr_epi16(0, -(gi+ge), -(gi+2*ge), -(gi+3*ge), -(gi+4*ge), -(gi+5*ge), -(gi+6*ge), -(gi+7*ge));
 	__m128i const e = _mm_set1_epi16(DZ_CELL_MIN), xtv = _mm_set1_epi16(-self->xt);
 	for(uint64_t p = 0; p < max_gap_len / L; p++) {
 		__m128i const f = s;
-		if(dz_unlikely(_test_xdrop(s, xtv))) { debug("p(%lu)", p); cap.epos = p; break; }
+		if(dz_unlikely(_test_xdrop(s, xtv))) { debug("p(%lu)", p); w.epos = p; break; }
 		_store_vector(&dp[p]);
 		if(p == 0) { s = _mm_setr_epi16(-gi, -(gi+ge), -(gi+2*ge), -(gi+3*ge), -(gi+4*ge), -(gi+5*ge), -(gi+6*ge), -(gi+7*ge)); }
 		s = _mm_subs_epi16(s, _mm_slli_epi16(gev, 3));
 	}
 
 	/* done */
-	*((struct dz_cap_s *)(self->root = (struct dz_cap_s const *)&dp[cap.epos])) = cap;
-	dz_mem(self)->stack.top = (uint8_t *)(self->root + 1);
-	debug("[%lu, %lu), inc(%lu), max(%lu)", cap.spos, cap.epos, cap.inc, cap.max);
+	struct dz_tail_s *tail = (struct dz_tail_s *)(w.cap = (struct dz_cap_s const *)&dp[w.epos]);
+	self->root = tail; *tail = w;
+	dz_mem(self)->stack.top = (uint8_t *)(tail + 1);
+	debug("[%u, %u), inc(%lu), cap(%p), max(%lu)", w.spos, w.epos, w.inc, w.cap, w.max);
 	return(self);
 }
 static
@@ -370,10 +392,10 @@ unittest() {
  * @fn dz_extend
  */
 static
-struct dz_cap_s *dz_extend(
+struct dz_tail_s *dz_extend(
 	struct dz_s *self,
 	struct dz_query_s const *query,
-	struct dz_cap_s const *const *edges, uint64_t n_edges,
+	struct dz_tail_s const *const *edges, uint64_t n_edges,
 	uint8_t const *ref, int64_t rlen)
 {
 	uint64_t const L = sizeof(__m128i) / sizeof(uint16_t);
@@ -396,31 +418,35 @@ struct dz_cap_s *dz_extend(
 
 	/* first iterate over the incoming edge objects to get the current max */
 	uint64_t adj[n_edges];								/* S[0, 0] = 0 */
-	struct dz_cap_s w = { .spos = UINT64_MAX };
+	struct dz_tail_s w = { .spos = UINT32_MAX };
 	for(uint64_t i = 0; i < n_edges; i++) {
 		/* update max and pos */
 		w.max = dz_max2(w.max, edges[i]->max);
 		w.spos = dz_min2(w.spos, edges[i]->spos);
 		w.epos = dz_max2(w.epos, edges[i]->epos);
-		debug("i(%lu), [%lu, %lu), inc(%lu), max(%lu)", i, edges[i]->spos, edges[i]->epos, edges[i]->inc, edges[i]->max);
+		debug("i(%lu), [%u, %u), inc(%lu), max(%lu)", i, edges[i]->spos, edges[i]->epos, edges[i]->inc, edges[i]->max);
 	}
-	debug("start extension [%lu, %lu), inc(%lu), max(%lu)", w.spos, w.epos, w.inc, w.max);
+	debug("start extension [%u, %u), inc(%lu), max(%lu), stack(%p, %p)", w.spos, w.epos, w.inc, w.max, dz_mem(self)->stack.top, dz_mem(self)->stack.end);
 
 	for(uint64_t i = 0; i < n_edges; i++) {
-		adj[i] = w.max - (edges[i]->max - edges[i]->inc);/* base = max - inc */
+		adj[i] = w.max - (edges[i]->max - edges[i]->inc);		/* base = max - inc */
 		debug("i(%lu), adj(%lu)", i, adj[i]);
 	}
 
 	/* X-drop DP */
-	ptrdiff_t inc = rlen < 0 ? -1 : 1;					/* direction */
-	uint8_t const *rp = ref, *rt = &ref[rlen];
+	ptrdiff_t dir = rlen < 0 ? -1 : 1;					/* direction */
+	uint8_t const *rp = rlen < 0 ? &ref[rlen - 1] : ref;
 	struct dz_swgv_s *pdp = _alloc_column(w.epos - w.spos) - w.spos;	/* allocate memory for the first column */
+	for(uint64_t p = w.spos; p < w.epos; p++) {
+		/* memset(pdp, 0xff, sizeof(struct dz_swgv_s) * (w.epos - w.spos)); */
+		__m128i const e = _mm_set1_epi16(INT16_MIN), f = e, s = e; _store_vector(&pdp[p]);
+	}
 
 	/* paste the last vectors */
 	for(uint64_t i = 0; i < n_edges; i++) {
 		struct dz_swgv_s const *tdp = (struct dz_swgv_s const *)edges[i] - edges[i]->epos;
 		__m128i const adjv = _mm_set1_epi16(adj[i]);
-		for(uint64_t p = w.spos; p < w.epos; p++) {
+		for(uint64_t p = edges[i]->spos; p < edges[i]->epos; p++) {
 			/* adjust offset */
 			__m128i e = _mm_subs_epi16(_mm_load_si128(&tdp[p].e), adjv);
 			__m128i f = _mm_subs_epi16(_mm_load_si128(&tdp[p].f), adjv);
@@ -454,17 +480,19 @@ struct dz_cap_s *dz_extend(
 			f = _mm_subs_epi16(f, gev8); s = _mm_subs_epi16(s, gev8);
 		} while(w.epos < qblen);
 	_merge_tail:;
-		w.inc = dz_max2(w.inc, _hmax_vector(mv));
-		debug("update inc(%lu), max(%lu)", w.inc, w.max + w.inc);
+		struct dz_cap_s *cap = _push_cap(pdp);
+		uint64_t inc = _hmax_vector(mv);
+		if(inc > w.inc) { w.inc = inc; w.cap = cap; }					/* 2 x cmov */
+		debug("update inc(%lu), max(%lu, %lu, %p), cap(%p)", w.inc, w.max, w.max + w.inc, w.cap, cap);
 	}
 
 	/* extension loop */
-	debug("rp(%p), rt(%p), inc(%ld)", rp, rt, inc);
-	while((rp += inc) != rt) {
-		debug("rp(%p)", rp);
+	debug("rp(%p), dir(%ld)", rp, dir);
+	while((rp += dir, --rlen > 0)) {
+		debug("rp(%p), [%u, %u), stack(%p, %p)", rp, w.spos, w.epos, dz_mem(self)->stack.top, dz_mem(self)->stack.end);
 		struct dz_swgv_s *dp = _alloc_column(w.epos - w.spos) - w.spos;
 		__m128i f = minv, ps = minv, mv = _mm_setzero_si128();
-		__m128i const xtv = _mm_set1_epi16(w.max - self->xt);
+		__m128i const xtv = _mm_set1_epi16(w.inc - self->xt);
 		for(uint64_t p = w.spos; p < w.epos; p++) {
 			_load_vector(&pdp[p]); _update_vector(p);
 			if(dz_unlikely(_test_xdrop(s, xtv))) {
@@ -480,16 +508,21 @@ struct dz_cap_s *dz_extend(
 			f = _mm_subs_epi16(f, gev8); s = _mm_subs_epi16(s, gev8);
 		} while(w.epos < qblen);
 	_loop_tail:;
-		w.inc = dz_max2(w.inc, _hmax_vector(mv)); pdp = dp;
-		debug("update inc(%lu), max(%lu)", w.inc, w.max + w.inc);
+		struct dz_cap_s *cap = _push_cap(dp); pdp = dp;
+		uint64_t inc = _hmax_vector(mv);
+		if(inc > w.inc) { w.inc = inc; w.cap = cap; }					/* 2 x cmov */
+		debug("update inc(%lu), max(%lu, %lu, %p), cap(%p)", w.inc, w.max, w.max + w.inc, w.cap, cap);
 		/* FIXME: rescue overflow */
 	}
 
 	/* update max vector (pdp always points at the last vector) */
-	struct dz_cap_s *cap = (struct dz_cap_s *)&pdp[w.epos];
-	dz_mem(self)->stack.top = (uint8_t *)(cap + 1);
-	w.max += w.inc; *cap = w;
-	return(cap);
+	struct dz_tail_s *tail = (struct dz_tail_s *)((struct dz_cap_s *)dz_mem(self)->stack.top - 1);
+	tail->max = w.max + w.inc;
+	tail->inc = w.inc;
+	tail->cap = w.cap;
+	dz_mem(self)->stack.top = (uint8_t *)(tail + 1);
+	debug("stack(%p, %p), tail(%p), max(%lu), inc(%lu), cap(%p)", dz_mem(self)->stack.top, dz_mem(self)->stack.end, tail, tail->max, tail->inc, tail->cap);
+	return(tail);
 }
 
 /* short, exact matching sequences */
@@ -508,7 +541,7 @@ unittest() {
 		"AAAAAACCATTAGCGGCCAGGATGCTTTACCCAATATCAGCGATGCCGAACGTATTTTTGCCGAACTTTT";
 
 	struct dz_query_s *q = dz_pack_query(dz, query, strlen((char const *)query));
-	struct dz_cap_s *cap = NULL;
+	struct dz_tail_s *cap = NULL;
 
 	/* nothing occurs */
 	cap = dz_extend(dz, q, NULL, 0, NULL, 0);
@@ -547,7 +580,7 @@ unittest( .name = "small" ) {
 		"AAAAAACCATTAGCGGCCAGGATGCTTTACCCAATATCAGCGATGCCGAACGTATTTTTGCCGAACTTTT";
 
 	struct dz_query_s *q = dz_pack_query(dz, query, strlen((char const *)query));
-	struct dz_cap_s const *cap[5] = { NULL };
+	struct dz_tail_s const *cap[5] = { NULL };
 
 	/*
 	 * AG---TTTT------CTGA
@@ -578,8 +611,10 @@ unittest( .name = "small" ) {
 static
 uint8_t *dz_trace(
 	struct dz_mem_s *self,
-	struct dz_cap_s *edges, uint64_t n_edges)
+	struct dz_tail_s *edges)
 {
+
+
 	return(NULL);
 }
 
