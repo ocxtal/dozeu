@@ -20,6 +20,10 @@
  * Myers bit vector (describes vertical (horizontal) tiling)
  *   Gene Myers, A fast bit-vector algorithm for approximate string matching based on dynamic programming, JACM (1999)
  */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <assert.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -765,8 +769,10 @@ unittest( .name = "trace" ) {
 	dz_destroy(dz);
 }
 
+#ifdef __cplusplus
+};	/* extern "C" { */
+#endif
 
-
-
-
-
+/**
+ * end of dozeu.h
+ */
