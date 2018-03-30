@@ -1,5 +1,5 @@
 // $(CC) -O3 -march=native -DMAIN -o dozeu dozeu.c
-
+#define DEBUG
 /**
  * @file dozeu.h
  * @brief SIMD X-drop DP for read-to-graph alignment
@@ -10,7 +10,7 @@
  *
  * @datail
  * minimum requirements:
- *   SSSE3 (Core 2 / Bobcat or later)
+ *   SSS4.1 (Core 2 / Bobcat or later)
  *   { gcc, clang, icc } x { Linux, Mac OS }
  * input sequence must be null-terminated array of {'A','C','G','T','a','c','g','t'}, otherwise undefined, not required to be terminated with '\0'.
  *
@@ -30,16 +30,34 @@ extern "C" {
 #include <x86intrin.h>
 #include "log.h"
 
-#define UNITTEST_ALIAS_MAIN			0
-#define UNITTEST_UNIQUE_ID			3213
-#include "unittest.h"
+// #if defined(DEBUG) && !defined(__cplusplus)
+#  define UNITTEST_ALIAS_MAIN		0
+#  define UNITTEST_UNIQUE_ID		3213
+#  include "unittest.h"
+// #else
+// #  define debug(...)				;
+// #endif
 
-unittest_config( .name = "dozeu" );
+#ifndef __x86_64__
+#  error "x86_64 is required"
+#endif
+#ifndef __SSE4_1__
+#  warning "SSE4.1 is automatically enabled in dozeu.h, please check compatibility to the system."
+#  define __dz_vectorize			__attribute__(( target( "sse4.1" ) ))
+#else
+#  define __dz_vectorize			/* follow the compiler options */
+#endif
+
+unittest_config( "dozeu" );
 unittest() { debug("hello"); }
 
-enum dz_alphabet { A = 0x00, C = 0x01, G = 0x02, T = 0x03, N = 0x04 };		/* internal encoding */
+enum dz_alphabet { A = 0x00, C = 0x01, G = 0x02, T = 0x03, U = 0x03, N = 0x04 };		/* internal encoding */
 
-#define dz_unused(x)				(void)(x)
+#ifdef __cplusplus
+#  define dz_unused(x)
+#else
+#  define dz_unused(x)				(void)(x)
+#endif
 #define dz_likely(x)				__builtin_expect(!!(x), 1)
 #define dz_unlikely(x)				__builtin_expect(!!(x), 0)
 #define dz_roundup(x, base)			( ((x) + (base) - 1) & ~((base) - 1) )
@@ -50,6 +68,12 @@ enum dz_alphabet { A = 0x00, C = 0x01, G = 0x02, T = 0x03, N = 0x04 };		/* inter
 #define dz_sa_cat_intl(x, y)		x##y
 #define dz_sa_cat(x, y)				dz_sa_cat_intl(x, y)
 #define dz_static_assert(expr)		typedef char dz_sa_cat(_st, __LINE__)[(expr) ? 1 : -1]
+
+#ifdef __SSE4_1__
+#  define dz_is_all_zero(x)			( _mm_test_all_zeros((x), (x)) == 1 )
+#else
+#  define dz_is_all_zero(x)			( _mm_movemask_epi8((x)) == 0 )
+#endif
 
 #define DZ_MEM_MARGIN_SIZE			( 256 )
 #define DZ_MEM_ALIGN_SIZE			( 16 )
@@ -106,7 +130,7 @@ dz_static_assert(sizeof(struct dz_s) % sizeof(__m128i) == 0);
  * @fn dz_malloc, dz_free
  * @brief aligned and margined malloc and free
  */
-static
+static inline
 void *dz_malloc(
 	size_t size)
 {
@@ -119,21 +143,21 @@ void *dz_malloc(
 		trap(); return(NULL);
 	}
 	debug("posix_memalign(%p), size(%lu)", ptr, size);
-	return(ptr + DZ_MEM_MARGIN_SIZE);
+	return((void *)((uint8_t *)ptr + DZ_MEM_MARGIN_SIZE));
 }
-static
+static inline
 void dz_free(
 	void *ptr)
 {
 	debug("free(%p)", ptr - DZ_MEM_MARGIN_SIZE);
-	free(ptr - DZ_MEM_MARGIN_SIZE);
+	free((void *)((uint8_t *)ptr - DZ_MEM_MARGIN_SIZE));
 	return;
 }
 
 unittest() {
-	uint64_t size[] = { 10, 100, 1000, 10000, 100000, 1000000, 10000000 };
-	for(uint64_t i = 0; i < sizeof(size) / sizeof(uint64_t); i++) {
-		uint8_t *p = dz_malloc(size[i]);
+	size_t size[] = { 10, 100, 1000, 10000, 100000, 1000000, 10000000 };
+	for(size_t i = 0; i < sizeof(size) / sizeof(size_t); i++) {
+		uint8_t *p = (uint8_t *)dz_malloc(size[i]);
 		ut_assert(p != NULL);
 		volatile uint8_t a = p[-32], b = p[0], c = p[size[i]], d = p[size[i] + 32];
 		dz_unused(a); dz_unused(b); dz_unused(c); dz_unused(d);
@@ -143,10 +167,19 @@ unittest() {
 }
 
 /**
- * @fn dz_mem_init, dz_mem_destroy, dz_mem_add_stack, dz_mem_malloc
+ * @fn dz_mem_init, dz_mem_destroy, dz_mem_add_stack, dz_mem_malloc, dz_mem_flush
  * @brief stack chain
  */
-static
+static inline
+void dz_mem_flush(
+	struct dz_mem_s *mem)
+{
+	mem->stack.curr = &mem->blk;
+	mem->stack.top = (uint8_t *)(mem + 1);
+	mem->stack.end = (uint8_t *)mem + DZ_MEM_INIT_SIZE;
+	return;
+}
+static inline
 struct dz_mem_s *dz_mem_init(
 	size_t size)
 {
@@ -156,16 +189,14 @@ struct dz_mem_s *dz_mem_init(
 		return(NULL);
 	}
 
-	/* init stack pointers */
-	mem->stack.curr = &mem->blk;
-	mem->stack.top = (uint8_t *)(mem + 1);
-	mem->stack.end = (uint8_t *)mem + DZ_MEM_INIT_SIZE;
-
 	/* init mem object */
 	mem->blk = (struct dz_mem_block_s){ .next = NULL, .size = DZ_MEM_INIT_SIZE };
+
+	/* init stack pointers */
+	dz_mem_flush(mem);
 	return(mem);
 }
-static
+static inline
 void dz_mem_destroy(
 	struct dz_mem_s *mem)
 {
@@ -178,7 +209,7 @@ void dz_mem_destroy(
 	}
 	return;
 }
-static
+static inline
 uint64_t dz_mem_add_stack(
 	struct dz_mem_s *mem,
 	size_t size)
@@ -190,7 +221,7 @@ uint64_t dz_mem_add_stack(
 			size + dz_roundup(sizeof(struct dz_mem_block_s), DZ_MEM_ALIGN_SIZE),
 			2 * mem->stack.curr->size
 		);
-		struct dz_mem_block_s *blk = dz_malloc(size);
+		struct dz_mem_block_s *blk = (struct dz_mem_block_s *)dz_malloc(size);
 		debug("malloc called, blk(%p)", blk);
 		if(blk == NULL) { return(1); }
 
@@ -207,7 +238,7 @@ uint64_t dz_mem_add_stack(
 	mem->stack.end = (uint8_t *)mem->stack.curr + mem->stack.curr->size;
 	return(0);
 }
-static
+static inline
 void *dz_mem_malloc(
 	struct dz_mem_s *mem,
 	size_t size)
@@ -219,8 +250,8 @@ void *dz_mem_malloc(
 }
 
 unittest() {
-	uint64_t size[] = { 10, 100, 1000, 10000, 100000, 1000000, 10000000 };
-	for(uint64_t i = 0; i < sizeof(size) / sizeof(uint64_t); i++) {
+	size_t size[] = { 10, 100, 1000, 10000, 100000, 1000000, 10000000 };
+	for(size_t i = 0; i < sizeof(size) / sizeof(size_t); i++) {
 		struct dz_mem_s *mem = dz_mem_init(size[i]);
 		uint8_t *p = (uint8_t *)dz_mem_malloc(mem, size[i]);
 		ut_assert(p != NULL);
@@ -260,7 +291,7 @@ unittest() {
 	if(dz_mem_stack_rem(dz_mem(self)) < next_req) { dz_mem_add_stack(dz_mem(self), 0); } \
 	/* push tail pointers */ \
 	struct dz_tail_s const **tail_arr = (struct dz_tail_s const **)(dz_mem(self)->stack.top + tail_arr_size); \
-	for(uint64_t i = 0; i < _nt; i++) { tail_arr[-((int64_t)_nt) + i] = (struct dz_tail_s const *)_tails[i]; } \
+	for(size_t i = 0; i < _nt; i++) { tail_arr[-((int64_t)_nt) + i] = (struct dz_tail_s const *)_tails[i]; } \
 	/* push cap info */ \
 	struct dz_cap_s *cap = (struct dz_cap_s *)tail_arr; \
 	cap->spos = cap->epos = 0;		/* head marked as zero */ \
@@ -296,7 +327,7 @@ unittest() {
 	__m128i s = _mm_load_si128((__m128i const *)(&((struct dz_swgv_s const *)(_p))->s)); print_vector(s);
 #define _update_vector(_p) { \
 	__m128i qv = _mm_loadl_epi64((__m128i const *)&qp[(_p) * L]); \
-	__m128i sc = _mm_cvtepi8_epi16(_mm_shuffle_epi8(_mm_load_si128((__m128i const *)self->matrix), _mm_or_si128(rv, qv))); print_vector(sc); \
+	__m128i sc = _mm_cvtepi8_epi16(_mm_shuffle_epi8(_mm_load_si128((__m128i const *)self->matrix), _mm_or_si128(rv, qv))); print_vector(_mm_cvtepi8_epi16(_mm_or_si128(rv, qv))); \
 	__m128i te = _mm_subs_epi16(_mm_max_epi16(e, _mm_subs_epi16(s, giv)), gev1); \
 	 print_vector(_mm_alignr_epi8(s, ps, 14));  \
 	__m128i ts = _mm_max_epi16(te, _mm_adds_epi16(sc, _mm_alignr_epi8(s, ps, 14))); ps = s; \
@@ -323,7 +354,7 @@ unittest() {
 #define _test_xdrop(_s, _xtv) ({ \
 	__m128i xtest = _mm_cmpgt_epi16(_s, _xtv); \
 	/* print_vector(_s); print_vector(_xtv); */ \
-	_mm_test_all_zeros(xtest, xtest); \
+	dz_is_all_zero(xtest); \
 })
 
 /* obsolete * /
@@ -339,19 +370,20 @@ unittest() {
 /**
  * @fn dz_init, dz_destroy
  */
-static
+static __dz_vectorize
 struct dz_s *dz_init(
 	int8_t const *score_matrix,		/* match award in positive, mismatch penalty in negative. s(A,A) at [0], s(A,C) at [1], ... s(T,T) at [15] where s(ref_base, query_base) is a score function */
-	uint16_t gap_open, uint16_t gap_extend,		/* gap penalties in positive */
+	uint16_t gap_open,				/* gap penalties in positive */
+	uint16_t gap_extend,
 	uint64_t max_gap_len)			/* as X-drop threshold */
 {
-	uint64_t const L = sizeof(__m128i) / sizeof(uint16_t), gi = gap_open, ge = gap_extend;
+	size_t const L = sizeof(__m128i) / sizeof(uint16_t), gi = gap_open, ge = gap_extend;
 	struct dz_mem_s *mem = dz_mem_init(DZ_MEM_INIT_SIZE);
 	if(mem == NULL) {
 		debug("failed to malloc memory");
 		return(NULL);
 	}
-	struct dz_s *self = dz_mem_malloc(mem, sizeof(struct dz_s));
+	struct dz_s *self = (struct dz_s *)dz_mem_malloc(mem, sizeof(struct dz_s));
 
 	/* constants */
 	__m128i const giv = _mm_set1_epi16(gi);
@@ -362,12 +394,12 @@ struct dz_s *dz_init(
 	self->xt = gi + ge * max_gap_len;			/* X-drop threshold */
 
 	/* create root cap */
-	struct dz_cap_s *cap = dz_mem_malloc(mem, sizeof(struct dz_cap_s));
+	struct dz_cap_s *cap = (struct dz_cap_s *)dz_mem_malloc(mem, sizeof(struct dz_cap_s));
 	_mm_store_si128((__m128i *)cap, _mm_setzero_si128());
 
 	/* calc vector length */
 	max_gap_len = dz_roundup(max_gap_len, L);
-	struct dz_tail_s w = { .epos = max_gap_len / L, .query = NULL }, *a = &w;		/* query = NULL for the first (root) column */
+	struct dz_tail_s w = { 0, (uint32_t)(max_gap_len / L) }, *a = &w;		/* query = NULL for the first (root) column */
 
 	/* malloc the first column */
 	struct dz_swgv_s *dp = _begin_column_head(0, max_gap_len / L, 0, &a, 0);
@@ -377,7 +409,7 @@ struct dz_s *dz_init(
 	__m128i const e = _mm_set1_epi16(DZ_CELL_MIN), xtv = _mm_set1_epi16(-self->xt);
 
 	/* until the X-drop test fails on all the cells in a vector */
-	for(uint64_t p = 0; p < max_gap_len / L; p++) {
+	for(size_t p = 0; p < max_gap_len / L; p++) {
 		__m128i const f = s;
 		if(dz_unlikely(_test_xdrop(s, xtv))) { debug("p(%lu)", p); w.epos = p; break; }
 		_store_vector(&dp[p]);
@@ -387,14 +419,23 @@ struct dz_s *dz_init(
 
 	/* done; create and return a tail object */
 	self->root = _end_matrix(dp, &w);
+	debug("self(%p), mem(%p), root(%p)", self, dz_mem(self), self->root);
 	return(self);
 }
-static
+static __dz_vectorize
 void dz_destroy(
 	struct dz_s *self)
 {
+	debug("self(%p)", self);
 	if(self == NULL) { return; }
 	dz_mem_destroy(dz_mem(self));
+	return;
+}
+static __dz_vectorize
+void dz_flush(
+	struct dz_s *self)
+{
+	dz_mem_flush(dz_mem(self));
 	return;
 }
 
@@ -418,37 +459,52 @@ unittest() {
 
 /**
  * @fn dz_pack_query
+ * packed sequence object is allocated inside the context so freed by dz_flush
  */
-static
+static __dz_vectorize
 struct dz_query_s *dz_pack_query(
 	struct dz_s *self,
-	uint8_t const *query, uint64_t qlen)
+	uint8_t const *query, size_t qlen)
 {
-	uint64_t const L = sizeof(__m128i) / sizeof(uint16_t);
-	struct dz_query_s *q = dz_mem_malloc(dz_mem(self), sizeof(struct dz_query_s) + dz_roundup(qlen, sizeof(__m128i)));
+	size_t const L = sizeof(__m128i) / sizeof(uint16_t);
+	struct dz_query_s *q = (struct dz_query_s *)dz_mem_malloc(dz_mem(self), sizeof(struct dz_query_s) + dz_roundup(qlen, sizeof(__m128i)));
 	q->blen = dz_roundup(qlen, L) / L;
 	q->arr[0] = 0;
 
-	/* ASCII to 2-bit conversion table (shifted by two bits to be used as the upper (row) shuffle index) */
+	/*
+	 * ASCII to 2-bit conversion table (shifted by two bits to be used as the upper (row) shuffle index)
+	 * @ABC_DEFG_HIJK_LMNO
+	 * PQRS_TUVW_XYZ
+	 */
 	static uint8_t const conv[16] __attribute__(( aligned(16) )) = {
+		/*
 		['A' & 0x0f] = A<<2, ['C' & 0x0f] = C<<2,
 		['G' & 0x0f] = G<<2, ['T' & 0x0f] = T<<2,
 		['U' & 0x0f] = T<<2, ['N' & 0x0f] = N<<2
+		*/
+		0, A<<2, 0, C<<2, T<<2, U<<2, 0, G<<2, 0, 0, 0, 0, 0, 0, N<<2, 0
 	};
 	__m128i pv = _mm_setzero_si128();
 	__m128i const cv = _mm_load_si128((__m128i const *)conv), fv = _mm_set1_epi8(0x0f);			/* conversion table and mask */
 
 	/* until the end of the query sequence */
-	for(uint64_t i = 0; i < dz_rounddown(qlen, sizeof(__m128i)); i += sizeof(__m128i)) {
+	for(size_t i = 0; i < dz_rounddown(qlen, sizeof(__m128i)); i += sizeof(__m128i)) {
 		__m128i const qv = _mm_loadu_si128((__m128i const *)&query[i]);
 		__m128i tv = _mm_shuffle_epi8(cv, _mm_and_si128(qv, fv));
 		_mm_store_si128((__m128i *)&q->arr[i], _mm_alignr_epi8(tv, pv, 15)); pv = tv;			/* shift by one to make room for a base */
 	}
 
 	/* continue the same conversion on the remainings */
-	for(uint64_t i = dz_rounddown(qlen, sizeof(__m128i)); i < qlen; i++) {
-		q->arr[i + 1] = conv[query[i]];
+	_mm_store_si128((__m128i *)&q->arr[dz_rounddown(qlen, sizeof(__m128i))], _mm_bsrli_si128(pv, 15));
+	for(size_t i = dz_rounddown(qlen, sizeof(__m128i)); i < qlen; i++) {
+		q->arr[i + 1] = conv[query[i] & 0x0f];
 	}
+
+	fprintf(stderr, "s(%s)\n", query);
+	for(size_t i = 0; i < qlen + 1; i++) {
+		fprintf(stderr, "i(%lu), c(%d)\n", i, q->arr[i]);
+	}
+
 	return(q);
 }
 
@@ -464,21 +520,28 @@ unittest() {
 /**
  * @fn dz_extend
  */
-static
+static __dz_vectorize
 struct dz_tail_s const *dz_extend(
 	struct dz_s *self,
 	struct dz_query_s const *query,
-	struct dz_tail_s const **tails, uint64_t n_tails,
+	struct dz_tail_s const **tails, size_t n_tails,
 	uint8_t const *ref, int64_t rlen)
 {
-	uint64_t const L = sizeof(__m128i) / sizeof(uint16_t);
+	size_t const L = sizeof(__m128i) / sizeof(uint16_t);
 	if(n_tails == 0 || rlen == 0) { return(NULL); }
 
-	/* load constants */
+	/*
+	 * load constants
+	 * @ABC_DEFG_HIJK_LMNO
+	 * PQRS_TUVW_XYZ
+	 */
 	static uint8_t const conv[16] __attribute__(( aligned(16) )) = {
+		/*
 		['A' & 0x0f] = A, ['C' & 0x0f] = C,
 		['G' & 0x0f] = G, ['T' & 0x0f] = T,
 		['U' & 0x0f] = T, ['N' & 0x0f] = N
+		*/
+		0, A, 0, C, T, U, 0, G, 0, 0, 0, 0, 0, 0, N, 0
 	};
 	__m128i const minv = _mm_set1_epi16(DZ_CELL_MIN);
 	__m128i const giv = _mm_load_si128((__m128i const *)self->giv);
@@ -487,12 +550,12 @@ struct dz_tail_s const *dz_extend(
 	__m128i const gev4 = _mm_slli_epi16(gev1, 2);
 	__m128i const gev8 = _mm_slli_epi16(gev1, 3);
 	uint8_t const *qp = query->arr;
-	uint64_t const qblen = query->blen;
+	size_t const qblen = query->blen;
 
 	/* first iterate over the incoming edge objects to get the current max */
 	uint64_t adj[n_tails];								/* S[0, 0] = 0 */
-	struct dz_tail_s w = { .spos = UINT32_MAX, .query = query };
-	for(uint64_t i = 0; i < n_tails; i++) {
+	struct dz_tail_s w = { UINT32_MAX, 0, 0, 0, query, NULL };	/* uint32_t spos, epos, max, inc; struct dz_query_s const *query; struct dz_cap_s const *cap; */
+	for(size_t i = 0; i < n_tails; i++) {
 		/* update max and pos */
 		w.max = dz_max2(w.max, tails[i]->max);
 		w.spos = dz_min2(w.spos, tails[i]->spos);
@@ -501,7 +564,7 @@ struct dz_tail_s const *dz_extend(
 	}
 	debug("start extension [%u, %u), inc(%u), max(%u), stack(%p, %p)", w.spos, w.epos, w.inc, w.max, dz_mem(self)->stack.top, dz_mem(self)->stack.end);
 
-	for(uint64_t i = 0; i < n_tails; i++) {
+	for(size_t i = 0; i < n_tails; i++) {
 		adj[i] = w.max - (tails[i]->max - tails[i]->inc);/* base = max - inc */
 		debug("i(%lu), adj(%lu)", i, adj[i]);
 	}
@@ -517,7 +580,7 @@ struct dz_tail_s const *dz_extend(
 	}
 
 	/* paste the last vectors */
-	for(uint64_t i = 0; i < n_tails; i++) {
+	for(size_t i = 0; i < n_tails; i++) {
 		struct dz_swgv_s const *tdp = (struct dz_swgv_s const *)tails[i] - tails[i]->epos;
 		__m128i const adjv = _mm_set1_epi16(adj[i]);
 		for(uint64_t p = tails[i]->spos; p < tails[i]->epos; p++) {
@@ -549,15 +612,15 @@ struct dz_tail_s const *dz_extend(
 		}
 
 		/* if reached the tail of the query sequence, finish the extension */
-		if(w.epos >= qblen) { goto _merge_tail; }
-
-		/* tail extension; clip the column length if too long */
-		__m128i e = minv, s = minv; _update_vector(w.epos);
-		do {
-			if(_test_xdrop(s, xtv)) { break; }
-			_store_vector(&pdp[w.epos]); w.epos++;
-			f = _mm_subs_epi16(f, gev8); s = _mm_subs_epi16(s, gev8);
-		} while(w.epos < qblen);
+		if(w.epos < qblen) {
+			/* tail extension; clip the column length if too long */
+			__m128i e = minv, s = minv; _update_vector(w.epos);
+			do {
+				if(_test_xdrop(s, xtv)) { break; }
+				_store_vector(&pdp[w.epos]); w.epos++;
+				f = _mm_subs_epi16(f, gev8); s = _mm_subs_epi16(s, gev8);
+			} while(w.epos < qblen);
+		}
 	_merge_tail:;
 		struct dz_cap_s *cap = _end_column(pdp, w.epos);
 		uint64_t inc = _hmax_vector(maxv);
@@ -567,7 +630,7 @@ struct dz_tail_s const *dz_extend(
 
 	/* extension loop */
 	debug("rp(%p), dir(%ld)", rp, dir);
-	while((rp += dir, --rlen > 0)) {
+	while((rp += dir, w.spos < w.epos && --rlen > 0)) {
 		debug("rp(%p), [%u, %u), stack(%p, %p)", rp, w.spos, w.epos, dz_mem(self)->stack.top, dz_mem(self)->stack.end);
 		/* load next base */
 		rch = conv[*rp & 0x0f];
@@ -589,16 +652,15 @@ struct dz_tail_s const *dz_extend(
 		}
 
 		/* if reached the tail of the query sequence */
-		if(w.epos >= qblen) { goto _loop_tail; }
-
-		/* if not, extend until X-drop test fails for all the cells in a vector */
-		__m128i e = minv, s = minv; _update_vector(w.epos);
-		do {
-			if(_test_xdrop(s, xtv)) { break; }
-			_store_vector(&dp[w.epos]); w.epos++;
-			f = _mm_subs_epi16(f, gev8); s = _mm_subs_epi16(s, gev8);
-		} while(w.epos < qblen);
-
+		if(w.epos < qblen) {
+			/* if not, extend until X-drop test fails for all the cells in a vector */
+			__m128i e = minv, s = minv; _update_vector(w.epos);
+			do {
+				if(_test_xdrop(s, xtv)) { break; }
+				_store_vector(&dp[w.epos]); w.epos++;
+				f = _mm_subs_epi16(f, gev8); s = _mm_subs_epi16(s, gev8);
+			} while(w.epos < qblen);
+		}
 		/* create cap object that contains [spos, epos) range (for use in the traceback routine) */
 	_loop_tail:;
 		struct dz_cap_s *cap = _end_column(dp, w.epos); pdp = dp;
@@ -642,7 +704,7 @@ unittest() {
 }
 
 /* a small graph */
-unittest( .name = "small" ) {
+unittest( "small" ) {
 	struct dz_s *dz = dz_init(DZ_UNITTEST_SCORE_PARAMS);
 	ut_assert(dz != NULL);
 
@@ -675,12 +737,12 @@ unittest( .name = "small" ) {
 /**
  * @fn dz_trace
  */
-static
+static __dz_vectorize
 uint8_t *dz_trace(
 	struct dz_s *self,
 	struct dz_tail_s const *tail)
 {
-	uint64_t const L = sizeof(__m128i) / sizeof(uint16_t);
+	size_t const L = sizeof(__m128i) / sizeof(uint16_t);
 	#define _is_head(_cap)				( *((uint64_t *)(_cap)) == 0 )		/* cap->spos == 0 && cap->epos == 0 */
 	#define _dp(_cap)					( (struct dz_swgv_s const *)(_cap) - (_cap)->epos )
 	#define _score(_l, _cap, _idx)		( ((int16_t const *)(&_dp(_cap)[(_idx) / L]._l))[(_idx) & (L - 1)] )	
@@ -749,7 +811,7 @@ uint8_t *dz_trace(
 }
 
 /* short, exact matching sequences */
-unittest( .name = "trace" ) {
+unittest( "trace" ) {
 	struct dz_s *dz = dz_init(DZ_UNITTEST_SCORE_PARAMS);
 	ut_assert(dz != NULL);
 
