@@ -1,12 +1,12 @@
 
 # dozeu.h
 
-SIMD-parallel BLAST X-drop alignment implementation.
+SIMD-parallel BLAST X-drop alignment implementation. (work in progress...)
 
 ## Features
 
 * BLAST X-drop DP algorithm ([semi-global **extension** aligmnent of affine-gap penalty](https://github.com/elucify/blast-docs/))
-* Vectorized with SSE4.1 (run on Core2 (2007) or later)
+* Vectorized with SSE4.1 (run on Core2 (2007) or later; 16-bit signed int is used for each cell)
 * Linear-to-graph alignment (first developed for [vg map](https://github.com/vgteam/vg) subcommand)
 
 ## Example
@@ -24,8 +24,8 @@ SIMD-parallel BLAST X-drop alignment implementation.
  */
 
 /* init score matrix and memory arena */
-int8_t M = 2, X = -3, GI = 5, GE = 1;		/* match, mismatch, gap open, and gap extend; g(k) = GI + k + GE for k-length gap */
-int8_t xdrop_threshold = 70;
+int8_t const M = 2, X = -3, GI = 5, GE = 1;		/* match, mismatch, gap open, and gap extend; g(k) = GI + k + GE for k-length gap */
+int8_t const xdrop_threshold = 70;
 int8_t const score_matrix[16] = {
 /*              ref-side  */
 /*             A  C  G  T */
@@ -58,7 +58,7 @@ ff[0] = dz_extend(
     "ACAC", strlen("ACAC"), 0   /* reference-side sequence, its length, and node id */
 );
 
-/* branching path */
+/* branching paths */
 ff[1] = dz_extend(dz, &ff[0], 1, "TTGT", strlen("TTGT"), 1);
 ff[2] = dz_extend(dz, &ff[0], 1, "ATCC", strlen("ATCC"), 2);
 ff[3] = dz_extend(dz, &ff[1], 2, "AGAC", strlen("AGAC"), 3);	/* "&ff[1], 2" indicates ff[1] and ff[2] are incoming nodes */
@@ -87,21 +87,28 @@ for(size_t i = 0; i < aln->span_length; i++) {
 		s[1].offset - s[0].offset, &aln->path[s->offset]
 	);
 }
-/*
- * ref_length(23), query_length(22), path(======X=======D========)
- * node_id(0), subpath_length(4), subpath(====)
- * node_id(1), subpath_length(4), subpath(==X=)
- * node_id(3), subpath_length(4), subpath(====)
- * node_id(5), subpath_length(5), subpath(==D==)
- * node_id(7), subpath_length(1), subpath(=)
- * node_id(9), subpath_length(5), subpath(=====)
- */
+```
+
+Running the example above:
+
+```
+% make && ./example
+gcc -O3 -march=native -o example example.c
+ref_length(23), query_length(22), path(======X=======D========)
+node_id(0), subpath_length(4), subpath(====)
+node_id(1), subpath_length(4), subpath(==X=)
+node_id(3), subpath_length(4), subpath(====)
+node_id(5), subpath_length(5), subpath(==D==)
+node_id(7), subpath_length(1), subpath(=)
+node_id(9), subpath_length(5), subpath(=====)
+%
 ```
 
 ## Issues and Limitations
 
 * Only supports nucleotide sequences (can be removed but not planned for now)
 * Newer instruction support (AVX / AVX2 / AVX-512) is not planned (keep it as simple as possible)
+* Node length to be shorter than 32768 / M.
 
 ## Brief description of the implementation
 
