@@ -150,13 +150,9 @@ dz_static_assert(sizeof(struct dz_forefront_s) % sizeof(__m128i) == 0);
 #define dz_cff(_p)					( (struct dz_forefront_s const *)(_p) )
 
 /* alignment path */
-
-enum {
-	DZ_MISMATCH = 1,
-	DZ_MATCH = 2,
-	DZ_INS = 3,
-	DZ_DEL = 4
-};
+#ifndef DZ_CIGAR_OP
+#  define DZ_CIGAR_OP				0x04030201
+#endif
 struct dz_path_span_s {
 	uint32_t id;
 	uint32_t offset;
@@ -535,7 +531,7 @@ void dz_flush(
 }
 
 #define DZ_UNITTEST_SCORE_PARAMS	(int8_t const []){ 2, -3, -3, -3, -3, 2, -3, -3, -3, -3, 2, -3, -3, -3, -3, 2 }, 5, 1, 20
-static uint8_t const *dz_unittest_query = (uint8_t const *)
+static char const *dz_unittest_query =
 	"AGCTTTTCATTCTGACTGCAACGGGCAATATGTCTCTGTGTGGATTAAAAAAAGAGTGTCTGATAGCAGC"
 	"TTCTGAACTGGTTACCTGCCGTGAGTAAATTAAAATTTTATTGACTTAGGTCACTAAATACTTTAACCAA"
 	"TATAGGCATAGCGCACAGACAGATAAAAATTACAGAGTACACAACATCCATGAAACGCATTAGCACCACC"
@@ -559,7 +555,7 @@ unittest() {
 static __dz_vectorize
 struct dz_query_s *dz_pack_query_forward(
 	struct dz_s *self,
-	uint8_t const *query, size_t qlen)
+	char const *query, size_t qlen)
 {
 	size_t const L = sizeof(__m128i) / sizeof(uint16_t);
 	struct dz_query_s *q = (struct dz_query_s *)dz_mem_malloc(dz_mem(self), sizeof(struct dz_query_s) + dz_roundup(qlen + 2, sizeof(__m128i)));
@@ -590,7 +586,7 @@ struct dz_query_s *dz_pack_query_forward(
 	// _mm_store_si128((__m128i *)&q->arr[dz_rounddown(qlen, sizeof(__m128i))], _mm_bsrli_si128(pv, 15));
 	q->arr[dz_rounddown(qlen, sizeof(__m128i))] = _mm_extract_epi8(pv, 15);
 	for(size_t i = dz_rounddown(qlen, sizeof(__m128i)); i < qlen; i++) {
-		q->arr[i + 1] = conv[query[i] & 0x0f];
+		q->arr[i + 1] = conv[(uint8_t)query[i] & 0x0f];
 	}
 	for(size_t i = qlen; i < dz_roundup(qlen + 1, sizeof(__m128i)); i++) {
 		q->arr[i + 1] = qS;
@@ -602,7 +598,7 @@ struct dz_query_s *dz_pack_query_forward(
 static __dz_vectorize
 struct dz_query_s *dz_pack_query_reverse(
 	struct dz_s *self,
-	uint8_t const *query, size_t qlen)
+	char const *query, size_t qlen)
 {
 	size_t const L = sizeof(__m128i) / sizeof(uint16_t);
 	struct dz_query_s *q = (struct dz_query_s *)dz_mem_malloc(dz_mem(self), sizeof(struct dz_query_s) + dz_roundup(qlen + 2, sizeof(__m128i)));
@@ -629,7 +625,7 @@ struct dz_query_s *dz_pack_query_reverse(
 	/* continue the same conversion on the remainings */
 	q->arr[dz_rounddown(qlen, sizeof(__m128i))] = _mm_extract_epi8(pv, 15);
 	for(size_t i = dz_rounddown(qlen, sizeof(__m128i)); i < qlen; i++) {
-		q->arr[i + 1] = conv[query[qlen - 1 - i] & 0x0f];
+		q->arr[i + 1] = conv[(uint8_t)query[qlen - 1 - i] & 0x0f];
 	}
 	for(size_t i = qlen; i < dz_roundup(qlen + 1, sizeof(__m128i)); i++) {
 		q->arr[i + 1] = qS;
@@ -641,7 +637,7 @@ struct dz_query_s *dz_pack_query_reverse(
 static __dz_vectorize
 struct dz_query_s *dz_pack_query(
 	struct dz_s *self,
-	uint8_t const *query, int64_t qlen)
+	char const *query, int64_t qlen)
 {
 	if(qlen >= 0) {
 		return(dz_pack_query_forward(self, query, (size_t)qlen));
@@ -748,7 +744,7 @@ struct dz_forefront_s const *dz_extend(
 	struct dz_s *self,
 	struct dz_query_s const *query,
 	struct dz_forefront_s const **forefronts, size_t n_forefronts,
-	uint8_t const *ref, int32_t rlen, uint32_t rid)
+	char const *ref, int32_t rlen, uint32_t rid)
 {
 	size_t const L = sizeof(__m128i) / sizeof(uint16_t);
 	if(n_forefronts == 0) { return(NULL); }										/* invalid */
@@ -786,7 +782,7 @@ struct dz_forefront_s const *dz_extend(
 
 	/* fetch the first base */
 	int64_t rrem = rlen, dir = rlen < 0 ? 1 : -1;
-	uint8_t const *rt = &ref[rrem - (rlen < 0)];
+	uint8_t const *rt = (uint8_t const *)&ref[rrem - (rlen < 0)];
 
 	while(rrem != 0 && w.r.spos < w.r.epos) {
 		pdp = _fill_column(w, pdp, query, rt, rrem); rrem += dir;
@@ -818,19 +814,19 @@ unittest() {
 	/* nothing occurs */
 	forefront = dz_extend(dz, q, NULL, 0, NULL, 0, 1);
 	ut_assert(forefront == NULL);
-	forefront = dz_extend(dz, q, NULL, 0, (uint8_t const *)"", 0, 2);
+	forefront = dz_extend(dz, q, NULL, 0, "", 0, 2);
 	ut_assert(forefront == NULL);
-	forefront = dz_extend(dz, q, dz_root(dz), 1, (uint8_t const *)"", 0, 3);
+	forefront = dz_extend(dz, q, dz_root(dz), 1, "", 0, 3);
 	ut_assert(forefront == NULL);
 
 	/* extend */
-	forefront = dz_extend(dz, q, dz_root(dz), 1, (uint8_t const *)"A", 1, 4);
+	forefront = dz_extend(dz, q, dz_root(dz), 1, "A", 1, 4);
 	ut_assert(forefront != NULL && forefront->max == 2);
 
-	forefront = dz_extend(dz, q, dz_root(dz), 1, (uint8_t const *)"AG", 2, 5);
+	forefront = dz_extend(dz, q, dz_root(dz), 1, "AG", 2, 5);
 	ut_assert(forefront != NULL && forefront->max == 4);
 
-	forefront = dz_extend(dz, q, dz_root(dz), 1, (uint8_t const *)"AGATTTT", 7, 6);
+	forefront = dz_extend(dz, q, dz_root(dz), 1, "AGATTTT", 7, 6);
 	ut_assert(forefront != NULL && forefront->max == 9);
 
 	dz_destroy(dz);
@@ -849,19 +845,19 @@ unittest( "small" ) {
 	 *   \ /    \    /
 	 *    C      CATT
 	 */
-	forefronts[0] = dz_extend(dz, q, dz_root(dz), 1, (uint8_t const *)"AG", 2, 1);
+	forefronts[0] = dz_extend(dz, q, dz_root(dz), 1, "AG", 2, 1);
 	ut_assert(forefronts[0] != NULL && forefronts[0]->max == 4);
 
-	forefronts[1] = dz_extend(dz, q, &forefronts[0], 1, (uint8_t const *)"C", 1, 2);
+	forefronts[1] = dz_extend(dz, q, &forefronts[0], 1, "C", 1, 2);
 	ut_assert(forefronts[1] != NULL && forefronts[1]->max == 6);
 
-	forefronts[2] = dz_extend(dz, q, &forefronts[0], 2, (uint8_t const *)"TTTT", 4, 3);
+	forefronts[2] = dz_extend(dz, q, &forefronts[0], 2, "TTTT", 4, 3);
 	ut_assert(forefronts[2] != NULL && forefronts[2]->max == 14);
 
-	forefronts[3] = dz_extend(dz, q, &forefronts[2], 1, (uint8_t const *)"CATT", 4, 4);
+	forefronts[3] = dz_extend(dz, q, &forefronts[2], 1, "CATT", 4, 4);
 	ut_assert(forefronts[3] != NULL && forefronts[3]->max == 22);
 
-	forefronts[4] = dz_extend(dz, q, &forefronts[2], 2, (uint8_t const *)"CTGA", 4, 5);
+	forefronts[4] = dz_extend(dz, q, &forefronts[2], 2, "CTGA", 4, 5);
 	ut_assert(forefronts[4] != NULL && forefronts[4]->max == 30);
 
 	dz_destroy(dz);
@@ -1013,7 +1009,7 @@ struct dz_alignment_s *dz_trace(
 		if(dz_inside(pcap->r.spos, _vector_idx(idx - 1), pcap->r.epos) \
 		&& score == (_s(s, pcap, idx - 1) + dz_base_pair_score(self, rch, query->arr[idx]))) { \
 			uint64_t eq = dz_base_pair_eq(self, rch, query->arr[idx]); \
-			*--path = eq ? DZ_MATCH : DZ_MISMATCH; cnt[eq]++; \
+			*--path = DZ_CIGAR_OP>>(eq<<3); cnt[eq]++; \
 			score = _s(s, pcap, idx - 1); idx--; rch = _load_prev_cap(s, score, _idx); \
 			continue; \
 		} \
@@ -1022,9 +1018,9 @@ struct dz_alignment_s *dz_trace(
 		if(_vector_idx(idx - 1) >= cap->r.spos && score == _s(f, cap, idx)) { \
 			_debug(I); \
 			while(_vector_idx(idx - 1) >= cap->r.spos && score != _s(s, cap, idx - 1) - self->gev[0] - self->giv[0]) { \
-				*--path = DZ_INS; cnt[2]++; score = _s(f, cap, idx - 1); idx--; _debug(I); \
+				*--path = (DZ_CIGAR_OP>>16) & 0xff; cnt[2]++; score = _s(f, cap, idx - 1); idx--; _debug(I); \
 			} \
-			*--path = DZ_INS; cnt[2]++; score = _s(s, cap, idx - 1); idx--; \
+			*--path = (DZ_CIGAR_OP>>16) & 0xff; cnt[2]++; score = _s(s, cap, idx - 1); idx--; \
 			continue; \
 		} \
 	}
@@ -1032,9 +1028,9 @@ struct dz_alignment_s *dz_trace(
 		if(dz_inside(pcap->r.spos, _vector_idx(idx), pcap->r.epos) && score == _s(e, cap, idx)) { \
 			_debug(D); \
 			while(dz_inside(pcap->r.spos, _vector_idx(idx), pcap->r.epos) && score == _s(e, pcap, idx) - self->gev[0]) { \
-				*--path = DZ_DEL; cnt[3]++; score = _s(e, pcap, idx); _load_prev_cap(e, score, _idx); _debug(D); \
+				*--path = (DZ_CIGAR_OP>>24) & 0xff; cnt[3]++; score = _s(e, pcap, idx); _load_prev_cap(e, score, _idx); _debug(D); \
 			} \
-			*--path = DZ_DEL; cnt[3]++; score = _s(s, pcap, idx); rch = _load_prev_cap(s, score, _idx); \
+			*--path = (DZ_CIGAR_OP>>24) & 0xff; cnt[3]++; score = _s(s, pcap, idx); rch = _load_prev_cap(s, score, _idx); \
 			continue; \
 		} \
 	}
@@ -1092,13 +1088,13 @@ unittest( "trace" ) {
 	struct dz_forefront_s const *forefront = NULL;
 	struct dz_alignment_s *aln = NULL;
 
-	forefront = dz_extend(dz, q, dz_root(dz), 1, (uint8_t const *)"A", 1, 1);
+	forefront = dz_extend(dz, q, dz_root(dz), 1, "A", 1, 1);
 	aln = dz_trace(dz, forefront);
 
-	forefront = dz_extend(dz, q, &forefront, 1, (uint8_t const *)"GC", 2, 2);
+	forefront = dz_extend(dz, q, &forefront, 1, "GC", 2, 2);
 	aln = dz_trace(dz, forefront);
 
-	forefront = dz_extend(dz, q, &forefront, 1, (uint8_t const *)"TTTT", 4, 3);
+	forefront = dz_extend(dz, q, &forefront, 1, "TTTT", 4, 3);
 	aln = dz_trace(dz, forefront);
 
 	dz_destroy(dz);
