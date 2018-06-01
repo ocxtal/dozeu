@@ -28,16 +28,29 @@ extern "C" {
 #include <assert.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 #include <x86intrin.h>
-#include "log.h"
 
-// #if defined(DEBUG) && !defined(__cplusplus)
+
+#define dz_pp_cat_intl(x, y)		x##y
+#define dz_pp_cat(x, y)				dz_pp_cat_intl(x, y)
+#define dz_static_assert(expr)		typedef char dz_pp_cat(_st_, __LINE__)[(expr) ? 1 : -1]
+#define dz_trap()					{ *((volatile uint8_t *)NULL); }
+
+
+#if defined(DEBUG) && !defined(__cplusplus)
 #  define UNITTEST_ALIAS_MAIN		0
 #  define UNITTEST_UNIQUE_ID		3213
 #  include "unittest.h"
-// #else
-// #  define debug(...)				;
-// #endif
+unittest_config( "dozeu" );
+unittest() { debug("hello"); }
+#  include "log.h"
+#else
+#  define unittest(...)				static void dz_pp_cat(dz_unused_, __LINE__)(void)
+#  define ut_assert(...)			;
+#  define debug(...)				;
+#  define trap()					;
+#endif
 
 /* vectorize */
 #ifndef __x86_64__
@@ -52,9 +65,6 @@ extern "C" {
 
 /* inlining (FIXME: add appropriate __force_inline flag) */
 #define __dz_force_inline			inline
-
-unittest_config( "dozeu" );
-unittest() { debug("hello"); }
 
 /* define DZ_N_AS_UNMATCHING_BASE to penalize Ns, otherwise scores for (x, N) and (N, x) are always set zero */
 // #define DZ_N_AS_UNMATCHING_BASE
@@ -84,12 +94,6 @@ enum dz_alphabet {
 #define dz_inside(x, y, z)			( ((uint64_t)(y) - (uint64_t)(x)) < ((uint64_t)(z) - (uint64_t)(x)) )
 #define dz_loadu_u64(p)				({ uint8_t const *_p = (uint8_t const *)(p); *((uint64_t const *)_p); })
 #define dz_storeu_u64(p, e)			{ uint8_t *_p = (uint8_t *)(p); *((uint64_t *)(_p)) = (e); }
-
-#define dz_pp_cat_intl(x, y)		x##y
-#define dz_pp_cat(x, y)				dz_pp_cat_intl(x, y)
-#define dz_static_assert(expr)		typedef char dz_pp_cat(_st_, __LINE__)[(expr) ? 1 : -1]
-
-#define dz_trap()					{ *((volatile uint8_t *)NULL); }
 
 #ifdef __SSE4_1__
 #  define dz_is_all_zero(x)			( _mm_test_all_zeros((x), (x)) == 1 )
@@ -210,7 +214,7 @@ void *dz_malloc(
 	size = dz_roundup(size, DZ_MEM_ALIGN_SIZE);
 	if(posix_memalign(&ptr, DZ_MEM_ALIGN_SIZE, size + 2 * DZ_MEM_MARGIN_SIZE) != 0) {
 		debug("posix_memalign failed");
-		trap(); return(NULL);
+		dz_trap(); return(NULL);
 	}
 	debug("posix_memalign(%p), size(%lu)", ptr, size);
 	return((void *)((uint8_t *)ptr + DZ_MEM_MARGIN_SIZE));
