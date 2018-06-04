@@ -31,6 +31,12 @@ extern "C" {
 #include <string.h>
 #include <x86intrin.h>
 
+#ifndef DZ_CIGAR_OP
+#  define DZ_CIGAR_OP				0x04030201
+#endif
+#ifndef dz_cmp_max
+#  define dz_cmp_max(x, y)			( (x) >= (y) )
+#endif
 
 #define dz_pp_cat_intl(x, y)		x##y
 #define dz_pp_cat(x, y)				dz_pp_cat_intl(x, y)
@@ -135,7 +141,7 @@ struct dz_forefront_s {
 	struct dz_range_s r;
 	uint32_t rid;
 	int32_t rlen;
-	uint32_t rsum, rcnt; int32_t max, inc, _pad[3];
+	uint32_t rsum, rcnt; int32_t max, inc;
 	struct dz_query_s const *query;
 	struct dz_cap_s const *mcap;
 };
@@ -154,9 +160,6 @@ dz_static_assert(sizeof(struct dz_forefront_s) % sizeof(__m128i) == 0);
 #define dz_cff(_p)					( (struct dz_forefront_s const *)(_p) )
 
 /* alignment path */
-#ifndef DZ_CIGAR_OP
-#  define DZ_CIGAR_OP				0x04030201
-#endif
 struct dz_path_span_s {
 	uint32_t id;
 	uint32_t offset;
@@ -734,7 +737,7 @@ dz_pp_cat(_forefront_, __LINE__):; \
 	/* create cap object that contains [spos, epos) range (for use in the traceback routine) */ \
 	struct dz_cap_s *cap = _end_column(cdp, sspos, w.r.epos); \
 	int32_t inc = _hmax_vector(maxv); \
-	if(inc >= w.inc) { w.inc = inc; w.mcap = cap; }/* update max; the actual score (absolute score accumulated from the origin) is expressed as max + inc; 2 x cmov */ \
+	if(dz_cmp_max(inc, w.inc)) { w.inc = inc; w.mcap = cap; }/* update max; the actual score (absolute score accumulated from the origin) is expressed as max + inc; 2 x cmov */ \
 	/* FIXME: rescue overflow */ \
 	/* debug("update inc(%u), max(%u, %u, %p), cap(%p)", w.inc, w.max, w.max + w.inc, w.mcap, cap); */ \
 	cdp; \
