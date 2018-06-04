@@ -1,5 +1,5 @@
 /**
- * Mapping ACACTTCTAGACTTTACCACTA to the following graph
+ * Aligning ACACTTCTAGACTTTACCACTA to the following graph
  *                         6
  *                         A
  *  0    1    3      5    /7\9
@@ -45,23 +45,23 @@ int main(int argc, char *argv[])
 	/* init node array */
 	struct dz_forefront_s const *ff[10] = { 0 };
 
-	/* fill root */
+	/* fill root: node 0 */
 	ff[0] = dz_extend(
-	    dz, q,						/* context and query */
-	    dz_root(dz), 1,				/* struct dz_forefront_s const *ff[], uint64_t n_ffs; incoming forefront and degree; dz_root(dz) for root node */
-	    "ACAC", strlen("ACAC"), 0	/* reference-side sequence, its length, and node id */
+	    dz, q,
+	    dz_root(dz), 1,             /* struct dz_forefront_s const *ff[], uint64_t n_ffs; incoming forefront and degree; dz_root(dz) for root node */
+	    "ACAC", strlen("ACAC"), 0   /* reference-side sequence, its length, and node id */
 	);
 
-	/* branching path */
+	/* branching paths: 1, 2 -> 3 */
 	ff[1] = dz_extend(dz, q, &ff[0], 1, "TTGT", strlen("TTGT"), 1);
 	ff[2] = dz_extend(dz, q, &ff[0], 1, "ATCC", strlen("ATCC"), 2);
-	ff[3] = dz_extend(dz, q, &ff[1], 2, "AGAC", strlen("AGAC"), 3);	/* "&ff[1], 2" indicates ff[1] and ff[2] are incoming nodes */
+	ff[3] = dz_extend(dz, q, &ff[1], 2, "AGAC", strlen("AGAC"), 3);		/* "&ff[1], 2" indicates ff[1] and ff[2] are incoming nodes */
 
-	/* deletion */
+	/* insertion: -, 4 -> 5 */
 	ff[4] = dz_extend(dz, q, &ff[3], 1, "T", strlen("T"), 4);
 	ff[5] = dz_extend(dz, q, &ff[3], 2, "TTCTA", strlen("TTCTA"), 5);	/* "&ff[3], 2" indicates ff[3] and ff[4] are incoming nodes */
 
-	/* SNVs */
+	/* SNVs: 6, 7, 8 -> 9 */
 	ff[6] = dz_extend(dz, q, &ff[5], 1, "A", strlen("A"), 6);
 	ff[7] = dz_extend(dz, q, &ff[5], 1, "C", strlen("C"), 7);
 	ff[8] = dz_extend(dz, q, &ff[5], 1, "G", strlen("G"), 8);
@@ -82,5 +82,8 @@ int main(int argc, char *argv[])
 			s[1].offset - s[0].offset, &aln->path[s->offset]
 		);
 	}
+
+	/* clean up */
+	dz_destroy(dz);
 	return(0);
 }
