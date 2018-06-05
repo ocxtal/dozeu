@@ -26,6 +26,7 @@ extern "C" {
 #endif
 
 #include <assert.h>
+#include <stdlib.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -45,12 +46,12 @@ extern "C" {
 
 
 #if defined(DEBUG) && !defined(__cplusplus)
+#  include "log.h"
 #  define UNITTEST_ALIAS_MAIN		0
 #  define UNITTEST_UNIQUE_ID		3213
 #  include "unittest.h"
 unittest_config( "dozeu" );
 unittest() { debug("hello"); }
-#  include "log.h"
 #else
 #  define unittest(...)				static void dz_pp_cat(dz_unused_, __LINE__)(void)
 #  define ut_assert(...)			;
