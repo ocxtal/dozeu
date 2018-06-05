@@ -674,8 +674,7 @@ unittest() {
 	dz_destroy(dz);
 }
 
-#define _merge_column(w, forefronts, n_forefronts, query) ({ \
-	uint64_t adj[n_forefronts];								/* S[0, 0] = 0 */ \
+#define _merge_column(w, adj, forefronts, n_forefronts, query) ({ \
 	for(size_t i = 0; i < n_forefronts; i++) { \
 		/* update max and pos */ \
 		w.r.spos = dz_min2(w.r.spos, forefronts[i]->r.spos); \
@@ -796,7 +795,8 @@ struct dz_forefront_s const *dz_extend(
 	_mm_store_si128((__m128i *)conv, _mm_load_si128((__m128i const *)&conv_fr[rlen > 0 ? 0 : 16]));
 
 	/* first iterate over the incoming edge objects to get the current max */
-	struct dz_swgv_s *pdp = _merge_column(w, forefronts, n_forefronts, query);
+	uint64_t adj[n_forefronts];							/* keep variable length array out of statement expression to avoid a bug of icc */
+	struct dz_swgv_s *pdp = _merge_column(w, adj, forefronts, n_forefronts, query);
 
 	/* fetch the first base */
 	int64_t rrem = rlen, dir = rlen < 0 ? 1 : -1;
