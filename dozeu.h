@@ -84,7 +84,7 @@ enum dz_alphabet {
 	#endif
 };
 #define dz_base_pair_score(_self, _r, _q)		( (_self)->matrix[((_r) | (_q)) & 0x1f] )
-#define dz_base_pair_eq(_self, _r, _q)			( (_r) == ((_q)<<2) )
+#define dz_base_pair_eq(_self, _r, _q)			( (uint32_t)(_r) == ((uint32_t)(_q)<<2) )
 
 #ifdef __cplusplus
 #  define dz_unused(x)
@@ -493,9 +493,10 @@ struct dz_s *dz_init(
 	struct dz_cap_s *cap = (struct dz_cap_s *)dz_mem_malloc(mem, sizeof(struct dz_cap_s));
 	_mm_store_si128((__m128i *)cap, _mm_setzero_si128());
 
-	/* calc vector length */
+	/* calc vector length; query = NULL for the first (root) column */
 	max_gap_len = dz_roundup(max_gap_len, L);
-	struct dz_forefront_s w = { { 0, (uint32_t)(max_gap_len / L) }, 0 }, *a = &w;	/* query = NULL for the first (root) column */
+	struct dz_forefront_s w = { { 0, (uint32_t)(max_gap_len / L) }, 0, 0, 0, 0, 0, 0, NULL, NULL };
+	struct dz_forefront_s *a = &w;
 
 	/* malloc the first column */
 	struct dz_swgv_s *dp = _begin_column_head(0, max_gap_len / L, 0, &a, 0);
@@ -774,7 +775,7 @@ struct dz_forefront_s const *dz_extend(
 	__m128i const gev4 = _mm_slli_epi16(gev1, 2);
 	__m128i const gev8 = _mm_slli_epi16(gev1, 3);
 
-	struct dz_forefront_s w = { { UINT32_MAX, 0 }, 0 };	/* uint32_t spos, epos, max, inc; struct dz_query_s const *query; struct dz_cap_s const *cap; */ \
+	struct dz_forefront_s w = { { UINT32_MAX, 0 }, 0, 0, 0, 0, 0, 0, NULL, NULL };	/* uint32_t spos, epos, max, inc; struct dz_query_s const *query; struct dz_cap_s const *cap; */ \
 	w.rlen = rlen;
 	w.rid = rid;
 	w.query = query;
@@ -836,6 +837,7 @@ unittest() {
 	forefront = dz_extend(dz, q, dz_root(dz), 1, "AGATTTT", 7, 6);
 	ut_assert(forefront != NULL && forefront->max == 9);
 
+	(void)forefront;
 	dz_destroy(dz);
 }
 
@@ -878,6 +880,7 @@ int64_t dz_calc_max_rpos(
 	struct dz_s *self,
 	struct dz_forefront_s const *forefront)
 {
+	(void)self;
 	struct dz_cap_s const *pcap = forefront->mcap;
 	int32_t rpos = (pcap == dz_ccap(forefront)) ? 0 : pcap->rrem;
 	return((int64_t)rpos);									/* signed expansion */
@@ -891,6 +894,7 @@ uint64_t dz_calc_max_qpos(
 	struct dz_s *self,
 	struct dz_forefront_s const *forefront)
 {
+	(void)self;
 	size_t const L = sizeof(__m128i) / sizeof(uint16_t);
 	#define _dp(_cap)					( (struct dz_swgv_s const *)(_cap) - (_cap)->r.epos )
 
@@ -999,7 +1003,7 @@ struct dz_alignment_s *dz_trace(
 	/* load max column pointers */
 	struct dz_cap_s const *pcap = forefront->mcap, *cap = NULL;
 	struct dz_query_s const *query = forefront->query;
-	uint32_t score = forefront->inc, cnt[4] = { 0 };
+	int32_t score = forefront->inc, cnt[4] = { 0 };
 
 	uint8_t debug_ref[1024], debug_query[1024];
 	uint8_t *drp = debug_ref, *dqp = debug_query;
@@ -1104,6 +1108,7 @@ unittest( "trace" ) {
 	forefront = dz_extend(dz, q, &forefront, 1, "TTTT", 4, 3);
 	aln = dz_trace(dz, forefront);
 
+	(void)aln;
 	dz_destroy(dz);
 }
 
