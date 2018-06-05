@@ -25,6 +25,15 @@
 extern "C" {
 #endif
 
+/* make sure POSIX APIs are properly activated */
+#if defined(__linux__) && !defined(_POSIX_C_SOURCE)
+#  define _POSIX_C_SOURCE		200112L
+#endif
+
+#if defined(__darwin__) && !defined(_BSD_SOURCE)
+#  define _BSD_SOURCE
+#endif
+
 #include <assert.h>
 #include <stdlib.h>
 #include <stdint.h>
