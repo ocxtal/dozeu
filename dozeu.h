@@ -443,9 +443,9 @@ unittest() {
 	_mm_store_si128((__m128i *)(&dz_swgv(_p)->s), s); \
 }
 #define _hmax_vector(_v) ({ \
-	__m128i _t = _mm_max_epi16(_v, _mm_bsrli_si128(_v, 8)); \
-	_t = _mm_max_epi16(_t, _mm_bsrli_si128(_t, 4)); \
-	_t = _mm_max_epi16(_t, _mm_bsrli_si128(_t, 2)); \
+	__m128i _t = _mm_max_epi16(_v, _mm_srli_si128(_v, 8)); \
+	_t = _mm_max_epi16(_t, _mm_srli_si128(_t, 4)); \
+	_t = _mm_max_epi16(_t, _mm_srli_si128(_t, 2)); \
 	(int64_t)((int16_t)(_mm_extract_epi16(_t, 0))); \
 })
 #define _test_xdrop(_s, _xtv) ({ \
@@ -592,7 +592,7 @@ struct dz_query_s *dz_pack_query_forward(
 	}
 
 	/* continue the same conversion on the remainings */
-	// _mm_store_si128((__m128i *)&q->arr[dz_rounddown(qlen, sizeof(__m128i))], _mm_bsrli_si128(pv, 15));
+	// _mm_store_si128((__m128i *)&q->arr[dz_rounddown(qlen, sizeof(__m128i))], _mm_srli_si128(pv, 15));
 	q->arr[dz_rounddown(qlen, sizeof(__m128i))] = _mm_extract_epi8(pv, 15);
 	for(size_t i = dz_rounddown(qlen, sizeof(__m128i)); i < qlen; i++) {
 		q->arr[i + 1] = conv[(uint8_t)query[i] & 0x0f];
