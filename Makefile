@@ -8,5 +8,5 @@ example: example.c dozeu.h
 	$(CC) $(CFLAGS) -o example example.c
 
 clean:
-	rm example
+	rm -f example
 
