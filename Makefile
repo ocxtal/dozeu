@@ -1,6 +1,6 @@
 
 CC=gcc
-CFLAGS=-O3 -march=native
+CFLAGS=-std=c99 -O3 -march=native
 
 all: example
 
