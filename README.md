@@ -122,7 +122,7 @@ Query sequence is first packed into an array of SIMD vectors with its encoding c
 For the detailed description of the BLAST X-drop DP algorithm, see the [document by @elucify](https://github.com/elucify/blast-docs/wiki/Gapped-Alignment-Phase). The following a simplified illustration of POA-like graph-capable extension of the algorithm.
 
 
-![An illustration of linear-to-graph SIMD-parallel X-drop DP](https://raw.githubusercontent.com/ocxtal/dozeu/master/fig/xdrop.png)
+<img src="https://raw.githubusercontent.com/ocxtal/dozeu/master/fig/xdrop.png">
 
 *An illustration of the SIMD-parallel X-drop DP aligning a sequence to a graph.*
 
