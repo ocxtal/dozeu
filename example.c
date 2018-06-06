@@ -8,6 +8,16 @@
  *       ATCC      T       G
  *       2         4       8
  */
+
+/* make sure POSIX APIs are properly activated */
+#if defined(__linux__) && !defined(_POSIX_C_SOURCE)
+#  define _POSIX_C_SOURCE		200112L
+#endif
+
+#if defined(__darwin__) && !defined(_BSD_SOURCE)
+#  define _BSD_SOURCE
+#endif
+
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
