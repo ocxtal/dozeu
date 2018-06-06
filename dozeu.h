@@ -446,7 +446,7 @@ unittest() {
 	__m128i _t = _mm_max_epi16(_v, _mm_bsrli_si128(_v, 8)); \
 	_t = _mm_max_epi16(_t, _mm_bsrli_si128(_t, 4)); \
 	_t = _mm_max_epi16(_t, _mm_bsrli_si128(_t, 2)); \
-	(int64_t)((int16_t)(_mm_extract_epi16(_t, 0))); \
+	((int16_t)(_mm_extract_epi16(_t, 0))); \
 })
 #define _test_xdrop(_s, _xtv) ({ \
 	__m128i xtest = _mm_cmpgt_epi16(_s, _xtv); \
