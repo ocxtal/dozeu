@@ -127,7 +127,9 @@ For the detailed description of the BLAST X-drop DP algorithm, see the [document
 *An illustration of the SIMD-parallel X-drop DP aligning a sequence to a graph.*
 
 
-The fill-in function takes an array of preceding nodes. The function first merges the incoming vectors by taking the maximum for each DP cell. The DP matrix is extended column by column until the end of the reference sequence. A reference sequence with negative length is treated as its reverse-complemented scaned from the last character, for example, (seq, len) = (&"AACG"[4], -4) gives the same result as ("CGTT", 4).
+The fill-in function takes an array of preceding nodes. The function first merges the incoming vectors by taking the maximum for each DP cell. The DP matrix is then extended row by row until the end of the reference sequence. A reference sequence with negative length is treated as its reverse-complemented scaned from the last character, for example, (seq, len) = (&"AACG"[4], -4) gives the same result as ("CGTT", 4).
+
+The X-drop condition is tested on each vector rather than on each cell. A vector is dropped only when all the cell have their values below the current maximum minus X. This conservative scheme ensures the algorithm to evaluate all the cells that are evaluated in the original non-vectorized X-drop DP. Thus it is expected the sensitivity will not be degraded by this modification.
 
 The maximum score position is updated when newer cell value takes greater than or equal to the  current maximum. It result in reporting longer path for the reference direction. On the other hand, the shortest path is reported for the query direction. (The former cmpeq behavior can be overwritten by defining `dz_cmp_max` macro).
 
