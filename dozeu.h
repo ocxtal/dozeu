@@ -35,7 +35,7 @@ extern "C" {
 #  define DZ_CIGAR_OP				0x04030201
 #endif
 #ifndef dz_cmp_max
-#  define dz_cmp_max(x, y)			( (x) >= (y) )
+#  define dz_cmp_max(x, y)			( (x) > (y) )
 #endif
 
 #define dz_pp_cat_intl(x, y)		x##y
