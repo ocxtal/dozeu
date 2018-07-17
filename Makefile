@@ -1,6 +1,6 @@
 
 CC=gcc
-CFLAGS=-std=c99 -O3 -march=native
+CFLAGS=-std=c99 -Wall -Wno-unused-variable -Wno-unused-function -O3 -march=native
 
 all: example example.2bit example.protein
 
@@ -15,5 +15,5 @@ test: all
 	(./example && ./example.2bit && ./example.protein && echo "succeeded") || echo "failed"
 
 clean:
-	rm -f example
+	rm -f example example.2bit example.protein
 

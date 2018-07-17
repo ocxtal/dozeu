@@ -30,7 +30,7 @@
 int main(int argc, char *argv[])
 {
 	/* init score matrix and memory arena */
-	int8_t const M = 2, X = -3, GI = 5, GE = 1;		/* match, mismatch, gap open, and gap extend; g(k) = GI + k + GE for k-length gap */
+	int8_t const GI = 5, GE = 1;				/* match, mismatch, gap open, and gap extend; g(k) = GI + k + GE for k-length gap */
 	int8_t const xdrop_threshold = 70;
 	int8_t const raw_score_matrix[24 * 24] = {
 	/*        BLOSUM62 obtained from https://www.ncbi.nlm.nih.gov/Class/FieldGuide/BLOSUM62.txt                   */
