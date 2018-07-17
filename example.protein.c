@@ -73,20 +73,6 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	/*
-	for(size_t i = 0; i < DZ_MAT_SIZE; i++) {
-		for(size_t j = 0; j < DZ_MAT_SIZE; j++) {
-			if(score_matrix[i * DZ_MAT_SIZE + j] > 0) {
-				fprintf(stderr, RED("%03d "), score_matrix[i * DZ_MAT_SIZE + j]);
-			} else {
-				fprintf(stderr, "%03d ", score_matrix[i * DZ_MAT_SIZE + j]);
-			}
-		}
-		fprintf(stderr, "\n");
-	}
-	*/
-
-
 	/* create context */
 	struct dz_s *dz = dz_init(
 		score_matrix,
