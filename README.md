@@ -111,7 +111,7 @@ node_id(9), subpath_length(5), subpath(=====)
 
 ## Issues and Limitations
 
-* Only supports nucleotide sequences (can be removed but not planned for now).
+* Only supports nucleotide sequences -> tentative support added.
 * Newer instruction support is not planned (e.g. AVX2 and AVX-512; keep it as simple as possible).
 * Node length to be shorter than 32768 / M.
 
@@ -158,7 +158,7 @@ In contrast, the 4 x *k*-mer matrix to align Nanopore signal to consensus sequen
 
 ## Acknowledgements
 
-I would like to give thank to Erik Garrison for his description on the internals of the vg toolkit, and insightful comments about alignment algorithms. I also thank Toshiaki Katayama and DBCLS staffs for holding RDF3 summit at Kyoto where this work has begun.
+I would like to give thank to Erik Garrison for his description on the internals of the vg toolkit, and insightful comments about alignment algorithms. I also thank Toshiaki Katayama and DBCLS staffs for holding 3rd RDF summit at Kyoto where this work has begun.
 
 ## License
 
