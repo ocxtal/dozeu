@@ -92,7 +92,7 @@ int main(int argc, char *argv[])
 		max
 	);
 
-	printf("ref_length(%u), query_length(%u), path(%s)\n", aln->ref_length, aln->query_length, aln->path);
+	printf("ref_length(%u), query_length(%u), score(%d), path(%s)\n", aln->ref_length, aln->query_length, aln->score, aln->path);
 	for(size_t i = 0; i < aln->span_length; i++) {
 		struct dz_path_span_s const *s = &aln->span[i];
 		printf("node_id(%u), subpath_length(%u), subpath(%.*s)\n",
