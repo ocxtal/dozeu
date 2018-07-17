@@ -58,8 +58,8 @@ int main(int argc, char *argv[])
 	/* fill root: node 0 */
 	ff[0] = dz_extend(
 	    dz, q,
-	    dz_root(dz), 1,             /* struct dz_forefront_s const *ff[], uint64_t n_ffs; incoming forefront and degree; dz_root(dz) for root node */
-	    "ACAC", strlen("ACAC"), 0   /* reference-side sequence, its length, and node id */
+	    dz_root(dz), 1,				/* struct dz_forefront_s const *ff[], uint64_t n_ffs; incoming forefront and degree; dz_root(dz) for root node */
+	    "ACAC", strlen("ACAC"), 0	/* reference-side sequence, its length, and node id */
 	);
 
 	/* branching paths: 1, 2 -> 3 */
@@ -77,10 +77,16 @@ int main(int argc, char *argv[])
 	ff[8] = dz_extend(dz, q, &ff[5], 1, "G", strlen("G"), 8);
 	ff[9] = dz_extend(dz, q, &ff[6], 3, "CACTA", strlen("CACTA"), 9);
 
+	/* detect max */
+	struct dz_forefront_s const *max = NULL;
+	for(size_t i = 0; i < 10; i++) {
+		if(max == NULL || ff[i]->max > max->max) { max = ff[i]; }
+	}
+
 	/* traceback */
 	struct dz_alignment_s const *aln = dz_trace(
 		dz,
-		ff[9]
+		max
 	);
 
 	printf("ref_length(%u), query_length(%u), path(%s)\n", aln->ref_length, aln->query_length, aln->path);
