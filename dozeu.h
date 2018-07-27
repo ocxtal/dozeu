@@ -316,6 +316,7 @@ void dz_mem_destroy(
 		debug("free blk(%p), next(%p)", blk, next);
 		dz_free(blk); blk = next;
 	}
+	dz_free(mem);
 	return;
 }
 static __dz_force_inline
