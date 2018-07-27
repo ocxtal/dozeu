@@ -1188,12 +1188,12 @@ struct dz_alignment_s *dz_trace(
 	/* allocate aln object */
 	size_t aln_size = (sizeof(struct dz_alignment_s)
 		+ (forefront->rcnt + 6) * sizeof(struct dz_path_span_s)
-		+ dz_roundup(forefront->rsum + idx, 8) * sizeof(uint8_t)
+		+ dz_roundup(forefront->rsum + idx + 1, 8) * sizeof(uint8_t)			/* +1 for tail '\0' */
 	);
 	struct dz_alignment_s *aln = (struct dz_alignment_s *)dz_mem_malloc(dz_mem(self), aln_size);
 	struct dz_path_span_s *span = (struct dz_path_span_s *)(aln + 1) + forefront->rcnt + 4, *span_base = span;
-	uint8_t *path = ((uint8_t *)(span + 2)) + forefront->rsum + idx, *path_base = path;
-	_push_span(forefront->rid);
+	uint8_t *path = ((uint8_t *)(span + 2)) + forefront->rsum + idx + 1, *path_base = path;
+	_push_span(forefront->rid); *--path = '\0';									/* make sure readable as C string */
 
 	/* load max column pointers */
 	struct dz_cap_s const *pcap = forefront->mcap, *cap = NULL;
