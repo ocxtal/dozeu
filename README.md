@@ -74,13 +74,19 @@ ff[7] = dz_extend(dz, q, &ff[5], 1, "C", strlen("C"), 7);
 ff[8] = dz_extend(dz, q, &ff[5], 1, "G", strlen("G"), 8);
 ff[9] = dz_extend(dz, q, &ff[6], 3, "CACTA", strlen("CACTA"), 9);
 
+/* detect max */
+struct dz_forefront_s const *max = NULL;
+for(size_t i = 0; i < 10; i++) {
+    if(max == NULL || ff[i]->max > max->max) { max = ff[i]; }
+}
+
 /* traceback */
 struct dz_alignment_s const *aln = dz_trace(
     dz,
     ff[9]
 );
 
-printf("ref_length(%u), query_length(%u), path(%s)\n", aln->ref_length, aln->query_length, aln->path);
+printf("ref_length(%u), query_length(%u), score(%d), path(%s)\n", aln->ref_length, aln->query_length, aln->score, aln->path);
 for(size_t i = 0; i < aln->span_length; i++) {
     struct dz_path_span_s const *s = &aln->span[i];
     printf("node_id(%u), subpath_length(%u), subpath(%.*s)\n",
