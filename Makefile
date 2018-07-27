@@ -1,6 +1,7 @@
 
 CC=gcc
-CFLAGS=-std=c99 -Wall -Wno-unused-variable -Wno-unused-function -O3 -march=native
+OFLAGS=-O3
+CFLAGS=$(OFLAGS) -std=c99 -Wall -Wno-unused-variable -Wno-unused-function -march=native
 
 all: example example.2bit example.protein
 
