@@ -65,9 +65,9 @@ enum dz_alphabet {
 	rA = 0x00, rC = 0x01, rG = 0x02, rT = 0x03, rU = 0x03,
 	qA = 0x00, qC = 0x04, qG = 0x08, qT = 0x0c, qU = 0x0c,
 	#ifdef DZ_N_AS_UNMATCHING_BASE
-		rN = 0x04, qN = 0x02, qS = 0x04
+		rN = 0x04, qN = 0x02, qS = 0x02
 	#else
-		rN = 0x90, qN = 0x90, qS = 0x04		/* pshufb instruction clears the column when the 7-th bit of the index is set */
+		rN = 0x90, qN = 0x90, qS = 0x02		/* pshufb instruction clears the column when the 7-th bit of the index is set */
 	#endif
 };
 #define dz_pair_score(_self, _q, _r, _i)	( (_self)->matrix[((_r) | (_q)->arr[(_i)]) & 0x1f] )
