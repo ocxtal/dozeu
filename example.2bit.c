@@ -4,7 +4,7 @@
  *                         6
  *                         A
  *  0    1    3      5    /7\9
- *  ACAC-TTGT-AGAC---TTCTA-C-CACTA
+ *  ACAC-TTGT-AGAC---TTCTA-C-CACGG
  *      \    /    \ /     \ /
  *       ATCC      T       G
  *       2         4       8
@@ -23,15 +23,16 @@
 #include <stdint.h>
 #include <string.h>
 
-#define DZ_NUCL_2BIT
-#define DZ_CIGAR_OP				0x44493d58		/* 'D', 'I', '=', 'X'; the default is 0x04030201 */
+#define DZ_NUCL_2BIT								/* use 2bit encoding for input sequences */
+#define DZ_FULL_LENGTH_BONUS						/* use full-length bonus feature */
+#define DZ_CIGAR_OP				0x44493d58			/* 'D', 'I', '=', 'X'; the default is 0x04030201 */
 #include "dozeu.h"
 
 int main(int argc, char *argv[])
 {
 	/* init score matrix and memory arena */
 	int8_t const M = 2, X = -3, GI = 5, GE = 1;		/* match, mismatch, gap open, and gap extend; g(k) = GI + k + GE for k-length gap */
-	int8_t const xdrop_threshold = 70, full_length_bonus = 0;
+	int8_t const xdrop_threshold = 70, full_length_bonus = 10;
 	int8_t const score_matrix[16] = {
 	/*                 ref-side  */
 	/*                A  C  G  T */
@@ -79,7 +80,7 @@ int main(int argc, char *argv[])
 	ff[6] = dz_extend(dz, q, &ff[5], 1, "\x0", 1, 6);
 	ff[7] = dz_extend(dz, q, &ff[5], 1, "\x1", 1, 7);
 	ff[8] = dz_extend(dz, q, &ff[5], 1, "\x2", 1, 8);
-	ff[9] = dz_extend(dz, q, &ff[6], 3, "\x1\x0\x1\x3\x0", 5, 9);
+	ff[9] = dz_extend(dz, q, &ff[6], 3, "\x1\x0\x1\x2\x2", 5, 9);
 
 	/* detect max */
 	struct dz_forefront_s const *max = NULL;

@@ -446,13 +446,28 @@ unittest() {
 	/* return the forefront pointer */ \
 	(struct dz_forefront_s const *)forefront; \
 })
+/**
+ * @macro _calc_bonus
+ * @brief add bonus to cells on the tail row; bonus constant vectors are always placed just before parr
+ */
+#ifdef DZ_FULL_LENGTH_BONUS
+#define _init_bonus(_query) \
+	uint32_t blim = (_query)->blen - 1; \
+	uint8_t const *pbonus = (_query)->arr;
 
+#define _add_bonus(_i, _v)			( _mm_add_epi16((_v), _mm_load_si128(&((__m128i const *)pbonus)[-2 + ((_i) == blim)])) )
+#else
+#define _init_bonus(_query)			;
+#define _add_bonus(_i, _v)			( (_v) )
+#endif
 
 #if defined(DZ_NUCL_ASCII)
 #define _init_rch(_query, _rt, _rrem) \
-	uint32_t rch = conv[_rt[-_rrem] & 0x0f], blim = (_query)->blen - 1; \
-	uint8_t const *pbase = (_query)->arr, *parr = pbase; \
+	_init_bonus(_query); \
+	uint32_t rch = conv[_rt[-_rrem] & 0x0f]; \
+	uint8_t const *parr = (_query)->arr; \
 	__m128i const rv = _mm_set1_epi8(rch);
+
 #define _calc_score_profile(_i) ({ \
 	__m128i qv = _mm_loadl_epi64((__m128i const *)&parr[(_i) * L]); \
 	__m128i sc = _mm_cvtepi8_epi16(_mm_shuffle_epi8(_mm_load_si128((__m128i const *)self->matrix), _mm_or_si128(rv, qv))); \
@@ -460,9 +475,11 @@ unittest() {
 })
 #elif defined(DZ_NUCL_2BIT)
 #define _init_rch(_query, _rt, _rrem) \
-	uint32_t rch = dir < 0 ? _rt[-_rrem] : (_rt[-_rrem] ^ 0x03), blim = (_query)->blen - 1; \
-	uint8_t const *pbase = (_query)->arr, *parr = pbase; \
+	_init_bonus(_query); \
+	uint32_t rch = dir < 0 ? _rt[-_rrem] : (_rt[-_rrem] ^ 0x03); \
+	uint8_t const *parr = (_query)->arr; \
 	__m128i const rv = _mm_set1_epi8(rch);
+
 #define _calc_score_profile(_i) ({ \
 	__m128i qv = _mm_loadl_epi64((__m128i const *)&parr[(_i) * L]); \
 	__m128i sc = _mm_cvtepi8_epi16(_mm_shuffle_epi8(_mm_load_si128((__m128i const *)self->matrix), _mm_or_si128(rv, qv))); \
@@ -470,25 +487,16 @@ unittest() {
 })
 #else /* DZ_PROTEIN */
 #define _init_rch(_query, _rt, _rrem) \
-	uint32_t rch = _rt[-_rrem] & 0x1f, blim = (_query)->blen - 1; \
+	_init_bonus(_query); \
+	uint32_t rch = _rt[-_rrem] & 0x1f; \
 	debug("rch(%c, %u, %x)", _rt[-_rrem], rch, rch); \
-	uint8_t const *pbase = (_query)->arr; \
 	int8_t const *parr = (int8_t const *)&(_query)->arr[rch * (_query)->blen * L];
+
 #define _calc_score_profile(_i) ({ \
 	__m128i sc = _mm_cvtepi8_epi16(_mm_loadl_epi64((__m128i const *)&parr[(_i) * L])); \
 	print_vector(sc); \
 	sc; \
 })
-#endif
-
-/**
- * @macro _calc_bonus
- * @brief add bonus to cells on the tail row; bonus constant vectors are always placed just before parr
- */
-#ifdef DZ_FULL_LENGTH_BONUS
-#define _add_bonus(_i, _v)			( _mm_add_epi16((_v), _mm_load_si128(&((__m128i const *)pbase)[-2 + ((_i) == blim)])) )
-#else
-#define _add_bonus(_i, _v)			( (_v) )
 #endif
 
 #define _load_vector(_p) \
@@ -504,8 +512,8 @@ unittest() {
 	tf = _mm_max_epi16(tf, _mm_subs_epi16(_mm_alignr_epi8(tf, minv, 12), gev2)); \
 	tf = _mm_max_epi16(tf, _mm_subs_epi16(_mm_alignr_epi8(tf, minv, 8), gev4)); \
 	ts = _mm_max_epi16(ts, tf); \
-	maxv = _mm_max_epi16(maxv, ts); \
-	/* print_vector(te); */ print_vector(ts); /* print_vector(tf); print_vector(maxv); */ \
+	maxv = _mm_max_epi16(maxv, _add_bonus(_p, ts)); \
+	/* print_vector(te); */ print_vector(_add_bonus(_p, ts)); /* print_vector(tf); */ print_vector(maxv); \
 	e = te; f = tf; s = ts; \
 }
 #define _store_vector(_p) { \
@@ -529,12 +537,12 @@ unittest() {
  * @fn dz_init, dz_destroy
  */
 static __dz_vectorize
-struct dz_s *dz_init(
+struct dz_s *dz_init_intl(
 	int8_t const *score_matrix,		/* match award in positive, mismatch penalty in negative. s(A,A) at [0], s(A,C) at [1], ... s(T,T) at [15] where s(ref_base, query_base) is a score function */
 	uint16_t gap_open,				/* gap penalties in positive */
 	uint16_t gap_extend,
 	uint64_t max_gap_len,			/* as X-drop threshold */
-	uint16_t full_length_bonus)
+	uint16_t full_length_bonus)		/* end-to-end mapping bonus; only activated when compiled with -DDZ_FULL_LENGTH_BONUS */
 {
 	size_t const L = sizeof(__m128i) / sizeof(uint16_t), gi = gap_open, ge = gap_extend;
 	/*
@@ -608,6 +616,30 @@ struct dz_s *dz_init(
 	debug("self(%p), mem(%p), root(%p)", self, dz_mem(self), self->root);
 	return(self);
 }
+
+#ifdef DZ_FULL_LENGTH_BONUS
+static __dz_vectorize
+struct dz_s *dz_init(
+	int8_t const *score_matrix,
+	uint16_t gap_open,
+	uint16_t gap_extend,
+	uint64_t max_gap_len,
+	uint16_t full_length_bonus)
+{
+	return(dz_init_intl(score_matrix, gap_open, gap_extend, max_gap_len, full_length_bonus));
+}
+#else
+static __dz_vectorize
+struct dz_s *dz_init(
+	int8_t const *score_matrix,
+	uint16_t gap_open,
+	uint16_t gap_extend,
+	uint64_t max_gap_len)
+{
+	return(dz_init_intl(score_matrix, gap_open, gap_extend, max_gap_len, 0));
+}
+#endif
+
 static __dz_vectorize
 void dz_destroy(
 	struct dz_s *self)
@@ -626,7 +658,12 @@ void dz_flush(
 	return;
 }
 
+#ifdef DZ_FULL_LENGTH_BONUS
 #define DZ_UNITTEST_SCORE_PARAMS	(int8_t const []){ 2, -3, -3, -3, -3, 2, -3, -3, -3, -3, 2, -3, -3, -3, -3, 2 }, 5, 1, 20, 0
+#else
+#define DZ_UNITTEST_SCORE_PARAMS	(int8_t const []){ 2, -3, -3, -3, -3, 2, -3, -3, -3, -3, 2, -3, -3, -3, -3, 2 }, 5, 1, 20
+#endif
+
 static char const *dz_unittest_query =
 	"AGCTTTTCATTCTGACTGCAACGGGCAATATGTCTCTGTGTGGATTAAAAAAAGAGTGTCTGATAGCAGC"
 	"TTCTGAACTGGTTACCTGCCGTGAGTAAATTAAAATTTTATTGACTTAGGTCACTAAATACTTTAACCAA"
@@ -665,7 +702,7 @@ struct dz_query_s *dz_pack_query_forward(
 	/*
 	 * tentative support of full-length bonus; precaclulated bonus score is saved at q->bonus[0] and q->bonus[1]; [0] for non-tail vector and [1] for tail vector
 	 */
-	q->bonus[L + ((qlen + 1) % L)] = self->bonus;
+	q->bonus[L + (qlen % L)] = self->bonus;
 	q->arr[0] = 0;
 
 	/*
@@ -717,7 +754,7 @@ struct dz_query_s *dz_pack_query_reverse(
 		.q = query,
 		.bonus = { 0 }
 	};
-	q->bonus[L + ((qlen + 1) % L)] = self->bonus;
+	q->bonus[L + (qlen % L)] = self->bonus;
 	q->arr[0] = 0;
 
 	static uint8_t const conv[16] __attribute__(( aligned(16) )) = {
@@ -767,7 +804,7 @@ struct dz_query_s *dz_pack_query_forward(
 		.q = query,
 		.bonus = { 0 }
 	};
-	q->bonus[L + ((qlen + 1) % L)] = self->bonus;
+	q->bonus[L + (qlen % L)] = self->bonus;
 
 	for(uint64_t j = 0; j < DZ_MAT_SIZE; j++) {
 		size_t const clen = dz_roundup(qlen + 1, L);
@@ -813,7 +850,7 @@ struct dz_query_s *dz_pack_query_reverse(
 		.q = query,
 		.bonus = { 0 }
 	};
-	q->bonus[L + ((qlen + 1) % L)] = self->bonus;
+	q->bonus[L + (qlen % L)] = self->bonus;
 
 	for(uint64_t j = 0; j < DZ_MAT_SIZE; j++) {
 		size_t const clen = dz_roundup(qlen + 1, L);
@@ -1112,10 +1149,11 @@ uint64_t dz_calc_max_qpos(
 	size_t const L = sizeof(__m128i) / sizeof(uint16_t);
 	#define _dp(_cap)					( (struct dz_swgv_s const *)(_cap) - (_cap)->r.epos )
 
+	_init_bonus(forefront->query);
 	struct dz_cap_s const *pcap = forefront->mcap;
 	__m128i const maxv = _mm_set1_epi16(forefront->inc);
 	for(uint64_t p = pcap->r.spos; p < pcap->r.epos; p++) {
-		__m128i const s = _mm_load_si128(&_dp(pcap)[p].s); print_vector(s);
+		__m128i const s = _add_bonus(p, _mm_load_si128(&_dp(pcap)[p].s)); print_vector(s);
 		uint64_t eq = _mm_movemask_epi8(_mm_cmpeq_epi16(s, maxv));
 		if(eq != 0) {
 			/* tzcntq is faster but avoid using it b/c it requires relatively newer archs */
@@ -1217,7 +1255,7 @@ struct dz_alignment_s *dz_trace(
 	/* load max column pointers */
 	struct dz_cap_s const *pcap = forefront->mcap, *cap = NULL;
 	struct dz_query_s const *query = forefront->query;
-	int32_t score = forefront->inc, cnt[4] = { 0 };
+	int32_t score = _s(s, pcap, idx), cnt[4] = { 0 };
 
 	uint8_t debug_ref[1024], debug_query[1024];
 	uint8_t *drp = debug_ref, *dqp = debug_query;

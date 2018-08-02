@@ -3,7 +3,7 @@
  *                         6
  *                         A
  *  0    1    3      5    /7\9
- *  ACAC-TTGT-AGAC---TTCTA-C-CACTA
+ *  ACAC-TTGT-AGAC---TTCTA-C-CACGG
  *      \    /    \ /     \ /
  *       ATCC      T       G
  *       2         4       8
@@ -22,14 +22,15 @@
 #include <stdint.h>
 #include <string.h>
 
-#define DZ_CIGAR_OP				0x44493d58		/* 'D', 'I', '=', 'X'; the default is 0x04030201 */
+#define DZ_FULL_LENGTH_BONUS						/* use full-length bonus feature */
+#define DZ_CIGAR_OP				0x44493d58			/* 'D', 'I', '=', 'X'; the default is 0x04030201 */
 #include "dozeu.h"
 
 int main(int argc, char *argv[])
 {
 	/* init score matrix and memory arena */
 	int8_t const M = 2, X = -3, GI = 5, GE = 1;		/* match, mismatch, gap open, and gap extend; g(k) = GI + k + GE for k-length gap */
-	int8_t const xdrop_threshold = 70, full_length_bonus = 0;
+	int8_t const xdrop_threshold = 70, full_length_bonus = 10;
 	int8_t const score_matrix[16] = {
 	/*              ref-side  */
 	/*             A  C  G  T */
@@ -76,7 +77,7 @@ int main(int argc, char *argv[])
 	ff[6] = dz_extend(dz, q, &ff[5], 1, "A", strlen("A"), 6);
 	ff[7] = dz_extend(dz, q, &ff[5], 1, "C", strlen("C"), 7);
 	ff[8] = dz_extend(dz, q, &ff[5], 1, "G", strlen("G"), 8);
-	ff[9] = dz_extend(dz, q, &ff[6], 3, "CACTA", strlen("CACTA"), 9);
+	ff[9] = dz_extend(dz, q, &ff[6], 3, "CACGG", strlen("CACGG"), 9);
 
 	/* detect max */
 	struct dz_forefront_s const *max = NULL;
