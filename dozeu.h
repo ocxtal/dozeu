@@ -150,8 +150,8 @@ unittest() { debug("hello"); }
 #define DZ_CELL_MARGINED_MIN		( DZ_CELL_MIN + DZ_CELL_MARGIN )
 #define DZ_CELL_MARGINED_MAX		( DZ_CELL_MAX - DZ_CELL_MARGIN )
 
-/* query */
-struct dz_query_s { uint64_t blen; char const *q; uint8_t arr[]; };	/* preconverted query sequence; blen = roundup(qlen, L) / L; array must have 16-byte-length margin at the forefront */
+/* query; preconverted query sequence; blen = roundup(qlen, L) / L; array must have 16-byte-length margin at the tail */
+struct dz_query_s { uint64_t blen; char const *q; int16_t bonus[2 * sizeof(__m128i) / sizeof(int16_t)]; uint8_t arr[]; };
 dz_static_assert(sizeof(struct dz_query_s) % sizeof(__m128i) == 0);
 
 /* node (reference) */
@@ -211,7 +211,7 @@ struct dz_stack_s { struct dz_mem_block_s *curr; uint8_t *top, *end; uint64_t _p
 struct dz_mem_s { struct dz_mem_block_s blk; struct dz_stack_s stack; };
 #define dz_mem_stack_rem(_mem)		( (size_t)((_mem)->stack.end - (_mem)->stack.top) )
 
-struct dz_s { int8_t matrix[32]; uint16_t giv[8], gev[8], xt, _pad[11]; struct dz_forefront_s const *root; int8_t protein_matrix[]; };
+struct dz_s { int8_t matrix[32]; uint16_t giv[8], gev[8], xt, bonus, _pad[10]; struct dz_forefront_s const *root; int8_t protein_matrix[]; };
 dz_static_assert(sizeof(struct dz_s) % sizeof(__m128i) == 0);
 #define dz_mem(_self)				( (struct dz_mem_s *)(_self) - 1 )
 
@@ -421,10 +421,6 @@ unittest() {
 	/* return array pointer */ \
 	(struct dz_swgv_s *)(cap + 1) - (_w).r.spos; \
 })
-#ifdef DZ_FULL_LENGTH_BONUS
-#define _end_column() ({ \
-})
-#else
 #define _end_column(_p, _spos, _epos) ({ \
 	/* write back the stack pointer and return a cap */ \
 	struct dz_range_s *r = dz_range(&dz_swgv(_p)[(_epos)]); \
@@ -432,7 +428,6 @@ unittest() {
 	r->spos = (_spos); r->epos = (_epos); \
 	(struct dz_cap_s *)r; \
 })
-#endif
 #define _end_matrix(_p, _wp, _rrem) ({ \
 	/* create forefront object */ \
 	struct dz_forefront_s *forefront = dz_forefront(&(dz_swgv(_p))[(_wp)->r.epos]); \
@@ -455,8 +450,8 @@ unittest() {
 
 #if defined(DZ_NUCL_ASCII)
 #define _init_rch(_query, _rt, _rrem) \
-	uint32_t rch = conv[_rt[-_rrem] & 0x0f]; \
-	uint8_t const *parr = (_query)->arr; \
+	uint32_t rch = conv[_rt[-_rrem] & 0x0f], blim = (_query)->blen - 1; \
+	uint8_t const *pbase = (_query)->arr, *parr = pbase; \
 	__m128i const rv = _mm_set1_epi8(rch);
 #define _calc_score_profile(_i) ({ \
 	__m128i qv = _mm_loadl_epi64((__m128i const *)&parr[(_i) * L]); \
@@ -465,8 +460,8 @@ unittest() {
 })
 #elif defined(DZ_NUCL_2BIT)
 #define _init_rch(_query, _rt, _rrem) \
-	uint32_t rch = dir < 0 ? _rt[-_rrem] : (_rt[-_rrem] ^ 0x03); \
-	uint8_t const *parr = (_query)->arr; \
+	uint32_t rch = dir < 0 ? _rt[-_rrem] : (_rt[-_rrem] ^ 0x03), blim = (_query)->blen - 1; \
+	uint8_t const *pbase = (_query)->arr, *parr = pbase; \
 	__m128i const rv = _mm_set1_epi8(rch);
 #define _calc_score_profile(_i) ({ \
 	__m128i qv = _mm_loadl_epi64((__m128i const *)&parr[(_i) * L]); \
@@ -475,14 +470,25 @@ unittest() {
 })
 #else /* DZ_PROTEIN */
 #define _init_rch(_query, _rt, _rrem) \
-	uint32_t rch = _rt[-_rrem] & 0x1f; \
+	uint32_t rch = _rt[-_rrem] & 0x1f, blim = (_query)->blen - 1; \
 	debug("rch(%c, %u, %x)", _rt[-_rrem], rch, rch); \
+	uint8_t const *pbase = (_query)->arr; \
 	int8_t const *parr = (int8_t const *)&(_query)->arr[rch * (_query)->blen * L];
 #define _calc_score_profile(_i) ({ \
 	__m128i sc = _mm_cvtepi8_epi16(_mm_loadl_epi64((__m128i const *)&parr[(_i) * L])); \
 	print_vector(sc); \
 	sc; \
 })
+#endif
+
+/**
+ * @macro _calc_bonus
+ * @brief add bonus to cells on the tail row; bonus constant vectors are always placed just before parr
+ */
+#ifdef DZ_FULL_LENGTH_BONUS
+#define _add_bonus(_i, _v)			( _mm_add_epi16((_v), _mm_load_si128(&((__m128i const *)pbase)[-2 + ((_i) == blim)])) )
+#else
+#define _add_bonus(_i, _v)			( (_v) )
 #endif
 
 #define _load_vector(_p) \
@@ -527,7 +533,8 @@ struct dz_s *dz_init(
 	int8_t const *score_matrix,		/* match award in positive, mismatch penalty in negative. s(A,A) at [0], s(A,C) at [1], ... s(T,T) at [15] where s(ref_base, query_base) is a score function */
 	uint16_t gap_open,				/* gap penalties in positive */
 	uint16_t gap_extend,
-	uint64_t max_gap_len)			/* as X-drop threshold */
+	uint64_t max_gap_len,			/* as X-drop threshold */
+	uint16_t full_length_bonus)
 {
 	size_t const L = sizeof(__m128i) / sizeof(uint16_t), gi = gap_open, ge = gap_extend;
 	/*
@@ -568,6 +575,7 @@ struct dz_s *dz_init(
 	_mm_store_si128((__m128i *)self->giv, giv);
 	_mm_store_si128((__m128i *)self->gev, gev);
 	self->xt = gi + ge * max_gap_len;			/* X-drop threshold */
+	self->bonus = full_length_bonus;
 
 	/* create root head */
 	struct dz_cap_s *cap = (struct dz_cap_s *)dz_mem_malloc(mem, sizeof(struct dz_cap_s));
@@ -618,7 +626,7 @@ void dz_flush(
 	return;
 }
 
-#define DZ_UNITTEST_SCORE_PARAMS	(int8_t const []){ 2, -3, -3, -3, -3, 2, -3, -3, -3, -3, 2, -3, -3, -3, -3, 2 }, 5, 1, 20
+#define DZ_UNITTEST_SCORE_PARAMS	(int8_t const []){ 2, -3, -3, -3, -3, 2, -3, -3, -3, -3, 2, -3, -3, -3, -3, 2 }, 5, 1, 20, 0
 static char const *dz_unittest_query =
 	"AGCTTTTCATTCTGACTGCAACGGGCAATATGTCTCTGTGTGGATTAAAAAAAGAGTGTCTGATAGCAGC"
 	"TTCTGAACTGGTTACCTGCCGTGAGTAAATTAAAATTTTATTGACTTAGGTCACTAAATACTTTAACCAA"
@@ -651,8 +659,13 @@ struct dz_query_s *dz_pack_query_forward(
 	struct dz_query_s *q = (struct dz_query_s *)dz_mem_malloc(dz_mem(self), sizeof(struct dz_query_s) + dz_roundup(qlen + 1, L) + sizeof(__m128i));
 	*q = (struct dz_query_s){
 		.blen = qlen == 0 ? 0 : (dz_roundup(qlen + 1, L) / L),
-		.q = query
+		.q = query,
+		.bonus = { 0 }
 	};
+	/*
+	 * tentative support of full-length bonus; precaclulated bonus score is saved at q->bonus[0] and q->bonus[1]; [0] for non-tail vector and [1] for tail vector
+	 */
+	q->bonus[L + ((qlen + 1) % L)] = self->bonus;
 	q->arr[0] = 0;
 
 	/*
@@ -701,8 +714,10 @@ struct dz_query_s *dz_pack_query_reverse(
 	struct dz_query_s *q = (struct dz_query_s *)dz_mem_malloc(dz_mem(self), sizeof(struct dz_query_s) + dz_roundup(qlen + 1, L) + sizeof(__m128i));
 	*q = (struct dz_query_s){
 		.blen = qlen == 0 ? 0 : (dz_roundup(qlen + 1, L) / L),
-		.q = query
+		.q = query,
+		.bonus = { 0 }
 	};
+	q->bonus[L + ((qlen + 1) % L)] = self->bonus;
 	q->arr[0] = 0;
 
 	static uint8_t const conv[16] __attribute__(( aligned(16) )) = {
@@ -749,8 +764,10 @@ struct dz_query_s *dz_pack_query_forward(
 	struct dz_query_s *q = (struct dz_query_s *)dz_mem_malloc(dz_mem(self), sizeof(struct dz_query_s) + DZ_MAT_SIZE * dz_roundup(qlen + 1, L) + sizeof(__m128i));
 	*q = (struct dz_query_s){
 		.blen = qlen == 0 ? 0 : (dz_roundup(qlen + 1, L) / L),
-		.q = query
+		.q = query,
+		.bonus = { 0 }
 	};
+	q->bonus[L + ((qlen + 1) % L)] = self->bonus;
 
 	for(uint64_t j = 0; j < DZ_MAT_SIZE; j++) {
 		size_t const clen = dz_roundup(qlen + 1, L);
@@ -793,8 +810,10 @@ struct dz_query_s *dz_pack_query_reverse(
 	struct dz_query_s *q = (struct dz_query_s *)dz_mem_malloc(dz_mem(self), sizeof(struct dz_query_s) + DZ_MAT_SIZE * dz_roundup(qlen + 1, L) + sizeof(__m128i));
 	*q = (struct dz_query_s){
 		.blen = qlen == 0 ? 0 : (dz_roundup(qlen + 1, L) / L),
-		.q = query
+		.q = query,
+		.bonus = { 0 }
 	};
+	q->bonus[L + ((qlen + 1) % L)] = self->bonus;
 
 	for(uint64_t j = 0; j < DZ_MAT_SIZE; j++) {
 		size_t const clen = dz_roundup(qlen + 1, L);
@@ -867,10 +886,10 @@ unittest() {
 		debug("i(%lu), [%u, %u), inc(%d), max(%d)", i, forefronts[i]->r.spos, forefronts[i]->r.epos, forefronts[i]->inc, forefronts[i]->max); \
 	} \
 	w.r.spos = w.r.spos > INT32_MAX ? 0 : w.r.spos; \
-	w.r.epos = dz_min2(w.r.epos, query->blen); \
+	w.r.epos = dz_min2(w.r.epos, query->blen);						/* make sure epos and p-iteration index is no larger than blen */ \
 	debug("start extension [%u, %u), inc(%d), max(%d), stack(%p, %p), rlen(%d)", w.r.spos, w.r.epos, w.inc, w.max, dz_mem(self)->stack.top, dz_mem(self)->stack.end, (int32_t)rlen); \
 	for(size_t i = 0; i < n_forefronts; i++) { \
-		adj[i] = w.max - (forefronts[i]->max - forefronts[i]->inc);/* base = max - inc */ \
+		adj[i] = w.max - (forefronts[i]->max - forefronts[i]->inc);	/* base = max - inc */ \
 		debug("i(%lu), adj(%lu)", i, adj[i]); \
 	} \
 	/* once; merge incoming vectors */ \
