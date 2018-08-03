@@ -211,7 +211,7 @@ struct dz_stack_s { struct dz_mem_block_s *curr; uint8_t *top, *end; uint64_t _p
 struct dz_mem_s { struct dz_mem_block_s blk; struct dz_stack_s stack; };
 #define dz_mem_stack_rem(_mem)		( (size_t)((_mem)->stack.end - (_mem)->stack.top) )
 
-struct dz_s { int8_t matrix[32]; uint16_t giv[8], gev[8], xt, bonus, _pad[10]; struct dz_forefront_s const *root; int8_t protein_matrix[]; };
+struct dz_s { int8_t matrix[32]; uint16_t giv[8], gev[8], xt, bonus, max_gap_len, _pad[9]; struct dz_forefront_s const *root; int8_t protein_matrix[]; };
 dz_static_assert(sizeof(struct dz_s) % sizeof(__m128i) == 0);
 #define dz_mem(_self)				( (struct dz_mem_s *)(_self) - 1 )
 
@@ -584,6 +584,7 @@ struct dz_s *dz_init_intl(
 	_mm_store_si128((__m128i *)self->gev, gev);
 	self->xt = gi + ge * max_gap_len;			/* X-drop threshold */
 	self->bonus = full_length_bonus;
+	self->max_gap_len = max_gap_len;			/* save raw value */
 
 	/* create root head */
 	struct dz_cap_s *cap = (struct dz_cap_s *)dz_mem_malloc(mem, sizeof(struct dz_cap_s));
