@@ -76,7 +76,7 @@ enum dz_alphabet {
 
 /* protein */
 #  ifndef DZ_MAT_SIZE
-#    define DZ_MAT_SIZE				( 20 )
+#    define DZ_MAT_SIZE				( 32 )
 #  endif
 #define dz_pair_score(_self, _q, _r, _i)	( (int8_t)((_q)->arr[(_r) * (_q)->blen * L + (_i)]) )
 #define dz_pair_eq(_self, _q, _r, _i)		( (uint32_t)((_q)->q[(_i) - 1] & 0x1f) == (uint32_t)(_r) )
@@ -92,7 +92,7 @@ enum dz_alphabet {
 	dz_static_assert(DZ_MAT_SIZE <= 32);
 #endif
 
-#if defined(DEBUG) && !defined(__cplusplus)
+#if (defined(DEBUG) || defined(UNITTEST)) && !defined(__cplusplus)
 #  include "log.h"
 #  define UNITTEST_ALIAS_MAIN		0
 #  define UNITTEST_UNIQUE_ID		3213
@@ -105,6 +105,16 @@ unittest() { debug("hello"); }
 #  define debug(...)				;
 #  define trap()					;
 #endif
+
+
+#if defined(DZ_NUCL_ASCII)
+#  define DZ_UNITTEST_INDEX			0
+#elif defined(DZ_NUCL_2BIT)
+#  define DZ_UNITTEST_INDEX			1
+#elif defined(DZ_PROTEIN)
+#  define DZ_UNITTEST_INDEX			2
+#endif
+#define dz_ut_sel(a, b, c)			( (DZ_UNITTEST_INDEX == 0) ? (a) : ((DZ_UNITTEST_INDEX == 1) ? (b) : (c)) )
 
 /* vectorize */
 #ifndef __x86_64__
@@ -465,18 +475,21 @@ unittest() {
 #define _init_rch(_query, _rt, _rrem) \
 	_init_bonus(_query); \
 	uint32_t rch = conv[_rt[-_rrem] & 0x0f]; \
+	debug("rch(%c, %u, %x)", _rt[-_rrem], rch, rch); \
 	uint8_t const *parr = (_query)->arr; \
 	__m128i const rv = _mm_set1_epi8(rch);
 
 #define _calc_score_profile(_i) ({ \
 	__m128i qv = _mm_loadl_epi64((__m128i const *)&parr[(_i) * L]); \
 	__m128i sc = _mm_cvtepi8_epi16(_mm_shuffle_epi8(_mm_load_si128((__m128i const *)self->matrix), _mm_or_si128(rv, qv))); \
+	print_vector(_mm_cvtepi8_epi16(rv)); print_vector(_mm_cvtepi8_epi16(qv)); \
 	sc; \
 })
 #elif defined(DZ_NUCL_2BIT)
 #define _init_rch(_query, _rt, _rrem) \
 	_init_bonus(_query); \
 	uint32_t rch = dir < 0 ? _rt[-_rrem] : (_rt[-_rrem] ^ 0x03); \
+	debug("rch(%c, %u, %x)", _rt[-_rrem], rch, rch); \
 	uint8_t const *parr = (_query)->arr; \
 	__m128i const rv = _mm_set1_epi8(rch);
 
@@ -494,7 +507,6 @@ unittest() {
 
 #define _calc_score_profile(_i) ({ \
 	__m128i sc = _mm_cvtepi8_epi16(_mm_loadl_epi64((__m128i const *)&parr[(_i) * L])); \
-	print_vector(sc); \
 	sc; \
 })
 #endif
@@ -505,7 +517,7 @@ unittest() {
 #define _update_vector(_p) { \
 	__m128i sc = _calc_score_profile(_p); \
 	__m128i te = _mm_subs_epi16(_mm_max_epi16(e, _mm_subs_epi16(s, giv)), gev1); \
-	/* print_vector(_mm_alignr_epi8(s, ps, 14)); */ \
+	/* print_vector(_mm_alignr_epi8(s, ps, 14)); */ print_vector(sc); \
 	__m128i ts = _mm_max_epi16(te, _mm_adds_epi16(sc, _mm_alignr_epi8(s, ps, 14))); ps = s; \
 	__m128i tf = _mm_max_epi16(_mm_subs_epi16(ts, giv), _mm_subs_epi16(_mm_alignr_epi8(minv, f, 14), gev1)); \
 	tf = _mm_max_epi16(tf, _mm_subs_epi16(_mm_alignr_epi8(tf, minv, 14), gev1)); \
@@ -659,12 +671,9 @@ void dz_flush(
 	return;
 }
 
-#ifdef DZ_FULL_LENGTH_BONUS
-#define DZ_UNITTEST_SCORE_PARAMS	(int8_t const []){ 2, -3, -3, -3, -3, 2, -3, -3, -3, -3, 2, -3, -3, -3, -3, 2 }, 5, 1, 20, 0
-#else
-#define DZ_UNITTEST_SCORE_PARAMS	(int8_t const []){ 2, -3, -3, -3, -3, 2, -3, -3, -3, -3, 2, -3, -3, -3, -3, 2 }, 5, 1, 20
-#endif
-
+#ifdef UNITTEST
+#if defined(DZ_NUCL_ASCII)
+static size_t const dz_unittest_query_length = 560;
 static char const *dz_unittest_query =
 	"AGCTTTTCATTCTGACTGCAACGGGCAATATGTCTCTGTGTGGATTAAAAAAAGAGTGTCTGATAGCAGC"
 	"TTCTGAACTGGTTACCTGCCGTGAGTAAATTAAAATTTTATTGACTTAGGTCACTAAATACTTTAACCAA"
@@ -674,6 +683,93 @@ static char const *dz_unittest_query =
 	"GTTCGGCGGTACATCAGTGGCAAATGCAGAACGTTTTCTGCGTGTTGCCGATATTCTGGAAAGCAATGCC"
 	"AGGCAGGGGCAGGTGGCCACCGTCCTCTCTGCCCCCGCCAAAATCACCAACCACCTGGTGGCGATGATTG"
 	"AAAAAACCATTAGCGGCCAGGATGCTTTACCCAATATCAGCGATGCCGAACGTATTTTTGCCGAACTTTT";
+
+static int8_t const dz_unittest_score_matrix[16] = {
+	2, -3, -3, -3, -3, 2, -3, -3, -3, -3, 2, -3, -3, -3, -3, 2
+};
+
+#elif defined(DZ_NUCL_2BIT)
+static size_t const dz_unittest_query_length = 560;
+static char const *dz_unittest_query =
+	"\x0\x2\x1\x3\x3\x3\x3\x1\x0\x3\x3\x1\x3\x2\x0\x1\x3\x2\x1\x0\x0\x1\x2\x2\x2\x1\x0\x0\x3\x0\x3\x2\x3\x1\x3"
+	"\x1\x3\x2\x3\x2\x3\x2\x2\x0\x3\x3\x0\x0\x0\x0\x0\x0\x0\x2\x0\x2\x3\x2\x3\x1\x3\x2\x0\x3\x0\x2\x1\x0\x2\x1"
+	"\x3\x3\x1\x3\x2\x0\x0\x1\x3\x2\x2\x3\x3\x0\x1\x1\x3\x2\x1\x1\x2\x3\x2\x0\x2\x3\x0\x0\x0\x3\x3\x0\x0\x0\x0"
+	"\x3\x3\x3\x3\x0\x3\x3\x2\x0\x1\x3\x3\x0\x2\x2\x3\x1\x0\x1\x3\x0\x0\x0\x3\x0\x1\x3\x3\x3\x0\x0\x1\x1\x0\x0"
+	"\x3\x0\x3\x0\x2\x2\x1\x0\x3\x0\x2\x1\x2\x1\x0\x1\x0\x2\x0\x1\x0\x2\x0\x3\x0\x0\x0\x0\x0\x3\x3\x0\x1\x0\x2"
+	"\x0\x2\x3\x0\x1\x0\x1\x0\x0\x1\x0\x3\x1\x1\x0\x3\x2\x0\x0\x0\x1\x2\x1\x0\x3\x3\x0\x2\x1\x0\x1\x1\x0\x1\x1"
+	"\x0\x3\x3\x0\x1\x1\x0\x1\x1\x0\x1\x1\x0\x3\x1\x0\x1\x1\x0\x3\x3\x0\x1\x1\x0\x1\x0\x2\x2\x3\x0\x0\x1\x2\x2"
+	"\x3\x2\x1\x2\x2\x2\x1\x3\x2\x0\x1\x2\x1\x2\x3\x0\x1\x0\x2\x2\x0\x0\x0\x1\x0\x1\x0\x2\x0\x0\x0\x0\x0\x0\x2"
+	"\x1\x1\x1\x2\x1\x0\x1\x1\x3\x2\x0\x1\x0\x2\x3\x2\x1\x2\x2\x2\x1\x3\x3\x3\x3\x3\x3\x3\x3\x3\x1\x2\x0\x1\x1"
+	"\x0\x0\x0\x2\x2\x3\x0\x0\x1\x2\x0\x2\x2\x3\x0\x0\x1\x0\x0\x1\x1\x0\x3\x2\x1\x2\x0\x2\x3\x2\x3\x3\x2\x0\x0"
+	"\x2\x3\x3\x1\x2\x2\x1\x2\x2\x3\x0\x1\x0\x3\x1\x0\x2\x3\x2\x2\x1\x0\x0\x0\x3\x2\x1\x0\x2\x0\x0\x1\x2\x3\x3"
+	"\x3\x3\x1\x3\x2\x1\x2\x3\x2\x3\x3\x2\x1\x1\x2\x0\x3\x0\x3\x3\x1\x3\x2\x2\x0\x0\x0\x2\x1\x0\x0\x3\x2\x1\x1"
+	"\x0\x2\x2\x1\x0\x2\x2\x2\x2\x1\x0\x2\x2\x3\x2\x2\x1\x1\x0\x1\x1\x2\x3\x1\x1\x3\x1\x3\x1\x3\x2\x1\x1\x1\x1"
+	"\x1\x2\x1\x1\x0\x0\x0\x0\x3\x1\x0\x1\x1\x0\x0\x1\x1\x0\x1\x1\x3\x2\x2\x3\x2\x2\x1\x2\x0\x3\x2\x0\x3\x3\x2"
+	"\x0\x0\x0\x0\x0\x0\x1\x1\x0\x3\x3\x0\x2\x1\x2\x2\x1\x1\x0\x2\x2\x0\x3\x2\x1\x3\x3\x3\x0\x1\x1\x1\x0\x0\x3"
+	"\x0\x3\x1\x0\x2\x1\x2\x0\x3\x2\x1\x1\x2\x0\x0\x1\x2\x3\x0\x3\x3\x3\x3\x3\x2\x1\x1\x2\x0\x0\x1\x3\x3\x3\x3";
+
+static int8_t const dz_unittest_score_matrix[16] = {
+	2, -3, -3, -3, -3, 2, -3, -3, -3, -3, 2, -3, -3, -3, -3, 2
+};
+
+#elif defined(DZ_PROTEIN)
+static size_t const dz_unittest_query_length = 511;
+static char const *dz_unittest_query =
+	"MATLVQTGKAKQLTLLGFFAITASMVMAVYEYPTFATSGFSLVFFLLLGGILWFIPVGLC"
+	"AAEMATVDGWEEGGVFAWVSNTLGPRWGFAAISFGYLQIAIGFIPMLYFVLGALSYILKW"
+	"PALNEDPITKTIAALIILWALALTQFGGTKYTARIAKVGFFAGILLPAFILIALAAIYLH"
+	"SGAPVAIEMDSKTFFPDFSKVGTLVVFVAFILSYMGVEASATHVNEMSNPGRDYPLAMLL"
+	"LMVAAICLSSVGGLSIAMVIPGNEINLSAGVMQTFTVLMSHVAPEIEWTVRVISALLLLG"
+	"VLAEIASWIVGPSRGMYVTAQKNLLPAAFAKMNKNGVPVTLVISQLVITSIALIILTNTG"
+	"GGNNMSFLIALALTVVIYLCAYFMLFIGYIVLVLKHPDLKRTFNIPGGKGVKLVVAIVGL"
+	"LTSIMAFIVSFLPPDNIQGDSTDMYVELLVVSFLVVLALPFILYAVHDRKGKANTGVTLE"
+	"PINSQNAPKGHFFLHPRARSPHYIVMNDKKH";
+
+/* BLOSUM62 */
+dz_static_assert(DZ_MAT_SIZE == 32);
+static int8_t const dz_unittest_score_matrix[DZ_MAT_SIZE * DZ_MAT_SIZE] = {
+	 1, -4, -4, -4, -4, -4, -4, -4, -4, -4,  0, -4, -4, -4, -4,  0, -4, -4, -4, -4, -4,  0, -4, -4, -4, -4, -4,  0,  0,  0,  0,  0,
+	-4,  4, -2,  0, -2, -1, -2,  0, -2, -1,  0, -1, -1, -1, -2,  0, -1, -1, -1,  1,  0,  0,  0, -3,  0, -2, -1,  0,  0,  0,  0,  0,
+	-4, -2,  4, -3,  4,  1, -3, -1,  0, -3,  0,  0, -4, -3,  3,  0, -2,  0, -1,  0, -1,  0, -3, -4, -1, -3,  1,  0,  0,  0,  0,  0,
+	-4,  0, -3,  9, -3, -4, -2, -3, -3, -1,  0, -3, -1, -1, -3,  0, -3, -3, -3, -1, -1,  0, -1, -2, -2, -2, -3,  0,  0,  0,  0,  0,
+	-4, -2,  4, -3,  6,  2, -3, -1, -1, -3,  0, -1, -4, -3,  1,  0, -1,  0, -2,  0, -1,  0, -3, -4, -1, -3,  1,  0,  0,  0,  0,  0,
+	-4, -1,  1, -4,  2,  5, -3, -2,  0, -3,  0,  1, -3, -2,  0,  0, -1,  2,  0,  0, -1,  0, -2, -3, -1, -2,  4,  0,  0,  0,  0,  0,
+	-4, -2, -3, -2, -3, -3,  6, -3, -1,  0,  0, -3,  0,  0, -3,  0, -4, -3, -3, -2, -2,  0, -1,  1, -1,  3, -3,  0,  0,  0,  0,  0,
+	-4,  0, -1, -3, -1, -2, -3,  6, -2, -4,  0, -2, -4, -3,  0,  0, -2, -2, -2,  0, -2,  0, -3, -2, -1, -3, -2,  0,  0,  0,  0,  0,
+	-4, -2,  0, -3, -1,  0, -1, -2,  8, -3,  0, -1, -3, -2,  1,  0, -2,  0,  0, -1, -2,  0, -3, -2, -1,  2,  0,  0,  0,  0,  0,  0,
+	-4, -1, -3, -1, -3, -3,  0, -4, -3,  4,  0, -3,  2,  1, -3,  0, -3, -3, -3, -2, -1,  0,  3, -3, -1, -1, -3,  0,  0,  0,  0,  0,
+	 0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+	-4, -1,  0, -3, -1,  1, -3, -2, -1, -3,  0,  5, -2, -1,  0,  0, -1,  1,  2,  0, -1,  0, -2, -3, -1, -2,  1,  0,  0,  0,  0,  0,
+	-4, -1, -4, -1, -4, -3,  0, -4, -3,  2,  0, -2,  4,  2, -3,  0, -3, -2, -2, -2, -1,  0,  1, -2, -1, -1, -3,  0,  0,  0,  0,  0,
+	-4, -1, -3, -1, -3, -2,  0, -3, -2,  1,  0, -1,  2,  5, -2,  0, -2,  0, -1, -1, -1,  0,  1, -1, -1, -1, -1,  0,  0,  0,  0,  0,
+	-4, -2,  3, -3,  1,  0, -3,  0,  1, -3,  0,  0, -3, -2,  6,  0, -2,  0,  0,  1,  0,  0, -3, -4, -1, -2,  0,  0,  0,  0,  0,  0,
+	 0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+	-4, -1, -2, -3, -1, -1, -4, -2, -2, -3,  0, -1, -3, -2, -2,  0,  7, -1, -2, -1, -1,  0, -2, -4, -2, -3, -1,  0,  0,  0,  0,  0,
+	-4, -1,  0, -3,  0,  2, -3, -2,  0, -3,  0,  1, -2,  0,  0,  0, -1,  5,  1,  0, -1,  0, -2, -2, -1, -1,  3,  0,  0,  0,  0,  0,
+	-4, -1, -1, -3, -2,  0, -3, -2,  0, -3,  0,  2, -2, -1,  0,  0, -2,  1,  5, -1, -1,  0, -3, -3, -1, -2,  0,  0,  0,  0,  0,  0,
+	-4,  1,  0, -1,  0,  0, -2,  0, -1, -2,  0,  0, -2, -1,  1,  0, -1,  0, -1,  4,  1,  0, -2, -3,  0, -2,  0,  0,  0,  0,  0,  0,
+	-4,  0, -1, -1, -1, -1, -2, -2, -2, -1,  0, -1, -1, -1,  0,  0, -1, -1, -1,  1,  5,  0,  0, -2,  0, -2, -1,  0,  0,  0,  0,  0,
+	 0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+	-4,  0, -3, -1, -3, -2, -1, -3, -3,  3,  0, -2,  1,  1, -3,  0, -2, -2, -3, -2,  0,  0,  4, -3, -1, -1, -2,  0,  0,  0,  0,  0,
+	-4, -3, -4, -2, -4, -3,  1, -2, -2, -3,  0, -3, -2, -1, -4,  0, -4, -2, -3, -3, -2,  0, -3, 11, -2,  2, -3,  0,  0,  0,  0,  0,
+	-4,  0, -1, -2, -1, -1, -1, -1, -1, -1,  0, -1, -1, -1, -1,  0, -2, -1, -1,  0,  0,  0, -1, -2, -1, -1, -1,  0,  0,  0,  0,  0,
+	-4, -2, -3, -2, -3, -2,  3, -3,  2, -1,  0, -2, -1, -1, -2,  0, -3, -1, -2, -2, -2,  0, -1,  2, -1,  7, -2,  0,  0,  0,  0,  0,
+	-4, -1,  1, -3,  1,  4, -3, -2,  0, -3,  0,  1, -3, -1,  0,  0, -1,  3,  0,  0, -1,  0, -2, -3, -1, -2,  4,  0,  0,  0,  0,  0,
+	 0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+	 0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+	 0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+	 0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+	 0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
+};
+
+#endif
+
+#ifdef DZ_FULL_LENGTH_BONUS
+#define DZ_UNITTEST_SCORE_PARAMS	dz_unittest_score_matrix, 5, 1, 20, 0
+#else
+#define DZ_UNITTEST_SCORE_PARAMS	dz_unittest_score_matrix, 5, 1, 20
+#endif
+#endif
 
 unittest() {
 	struct dz_s *dz = dz_init(DZ_UNITTEST_SCORE_PARAMS);
@@ -908,7 +1004,7 @@ unittest() {
 	struct dz_s *dz = dz_init(DZ_UNITTEST_SCORE_PARAMS);
 	ut_assert(dz != NULL);
 
-	struct dz_query_s *q = dz_pack_query(dz, dz_unittest_query, strlen((char const *)dz_unittest_query));
+	struct dz_query_s *q = dz_pack_query(dz, dz_unittest_query, dz_unittest_query_length);
 	dz_unused(q);
 	dz_destroy(dz);
 }
@@ -1064,63 +1160,151 @@ struct dz_forefront_s const *dz_extend(
 #undef _fill_column
 
 /* short, exact matching sequences */
-unittest() {
+unittest( "extend.base" ) {
 	struct dz_s *dz = dz_init(DZ_UNITTEST_SCORE_PARAMS);
 	ut_assert(dz != NULL);
 
-	struct dz_query_s const *q = dz_pack_query(dz, dz_unittest_query, strlen((char const *)dz_unittest_query));
-	struct dz_forefront_s const *forefront = NULL;
+	for(size_t trial = 0; trial < 3; trial++) {
+		struct dz_query_s const *q = dz_pack_query(dz, dz_unittest_query,
+			  trial == 0 ? dz_unittest_query_length
+			: trial == 1 ? 3
+			:              10
+		);
+		struct dz_forefront_s const *forefront = NULL;
 
-	/* nothing occurs */
-	forefront = dz_extend(dz, q, NULL, 0, NULL, 0, 1);
-	ut_assert(forefront == NULL);
-	forefront = dz_extend(dz, q, NULL, 0, "", 0, 2);
-	ut_assert(forefront == NULL);
-	forefront = dz_extend(dz, q, dz_root(dz), 1, "", 0, 3);
-	ut_assert(forefront == NULL);
+		/* nothing occurs */
+		forefront = dz_extend(dz, q, NULL, 0, NULL, 0, 1);
+		ut_assert(forefront == NULL);
+		forefront = dz_extend(dz, q, NULL, 0, "", 0, 2);
+		ut_assert(forefront == NULL);
+		forefront = dz_extend(dz, q, dz_root(dz), 1, "", 0, 3);
+		ut_assert(forefront == *dz_root(dz));
 
-	/* extend */
-	forefront = dz_extend(dz, q, dz_root(dz), 1, "A", 1, 4);
-	ut_assert(forefront != NULL && forefront->max == 2);
+		/* extend */
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("A", "\x0", "M"), 1, 4);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(2, 2, 5));
 
-	forefront = dz_extend(dz, q, dz_root(dz), 1, "AG", 2, 5);
-	ut_assert(forefront != NULL && forefront->max == 4);
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AG", "\x0\x2", "MA"), 2, 5);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(4, 4, 9));
+		if(trial == 1) { continue; }
 
-	forefront = dz_extend(dz, q, dz_root(dz), 1, "AGATTTT", 7, 6);
-	ut_assert(forefront != NULL && forefront->max == 9);
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTT", "\x0\x2\x0\x3\x3\x3\x3", "MASLVQT"), 7, 6);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(9, 9, 28));
+		if(trial == 2) { continue; }
 
-	(void)forefront;
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTTC", "\x0\x2\x0\x3\x3\x3\x3\x1", "MASLVQTG"), 8, 7);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(11, 11, 34));
+
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTTCA", "\x0\x2\x0\x3\x3\x3\x3\x1\x0", "MASLVQTGK"), 9, 8);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(13, 13, 39));
+
+		(void)forefront;
+	}
 	dz_destroy(dz);
 }
-
-/* a small graph */
-unittest( "small" ) {
+#ifndef DZ_PROTEIN
+unittest( "extend.base.revcomp" ) {
 	struct dz_s *dz = dz_init(DZ_UNITTEST_SCORE_PARAMS);
 	ut_assert(dz != NULL);
 
-	struct dz_query_s *q = dz_pack_query(dz, dz_unittest_query, strlen((char const *)dz_unittest_query));
-	struct dz_forefront_s const *forefronts[5] = { NULL };
+	char revcomp[dz_unittest_query_length];
+	for(size_t i = 0; i < dz_unittest_query_length; i++) {
+		switch(dz_unittest_query[dz_unittest_query_length - i - 1]) {
+			case 'A': revcomp[i] = 'T'; break;
+			case 'C': revcomp[i] = 'G'; break;
+			case 'G': revcomp[i] = 'C'; break;
+			case 'T': revcomp[i] = 'A'; break;
+			case 0: revcomp[i] = 3; break;
+			case 1: revcomp[i] = 2; break;
+			case 2: revcomp[i] = 1; break;
+			case 3: revcomp[i] = 0; break;
+		}
+	}
+	for(size_t trial = 0; trial < 3; trial++) {
+		size_t length = trial == 0 ? dz_unittest_query_length
+					  : trial == 1 ? 3
+					  :              10;
+		struct dz_query_s const *q = dz_pack_query_reverse(dz, &revcomp[dz_unittest_query_length - length], length);
+		struct dz_forefront_s const *forefront = NULL;
 
-	/*
-	 * AG---TTTT------CTGA
-	 *   \ /    \    /
-	 *    C      CATT
-	 */
-	forefronts[0] = dz_extend(dz, q, dz_root(dz), 1, "AG", 2, 1);
-	ut_assert(forefronts[0] != NULL && forefronts[0]->max == 4);
+		/* nothing occurs */
+		forefront = dz_extend(dz, q, NULL, 0, NULL, 0, 1);
+		ut_assert(forefront == NULL);
+		forefront = dz_extend(dz, q, NULL, 0, "", 0, 2);
+		ut_assert(forefront == NULL);
+		forefront = dz_extend(dz, q, dz_root(dz), 1, "", 0, 3);
+		ut_assert(forefront == *dz_root(dz));
 
-	forefronts[1] = dz_extend(dz, q, &forefronts[0], 1, "C", 1, 2);
-	ut_assert(forefronts[1] != NULL && forefronts[1]->max == 6);
+		/* extend */
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("A", "\x0", "M"), 1, 4);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(2, 2, 5));
 
-	forefronts[2] = dz_extend(dz, q, &forefronts[0], 2, "TTTT", 4, 3);
-	ut_assert(forefronts[2] != NULL && forefronts[2]->max == 14);
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AG", "\x0\x2", "MA"), 2, 5);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(4, 4, 9));
+		if(trial == 1) { continue; }
 
-	forefronts[3] = dz_extend(dz, q, &forefronts[2], 1, "CATT", 4, 4);
-	ut_assert(forefronts[3] != NULL && forefronts[3]->max == 22);
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTT", "\x0\x2\x0\x3\x3\x3\x3", "MASLVQT"), 7, 6);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(9, 9, 28));
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel(&"AAAATCT"[7], &"\x0\x0\x0\x0\x3\x1\x3"[7], "MASLVQT"), -7, 6);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(9, 9, 28));
+		if(trial == 2) { continue; }
 
-	forefronts[4] = dz_extend(dz, q, &forefronts[2], 2, "CTGA", 4, 5);
-	ut_assert(forefronts[4] != NULL && forefronts[4]->max == 30);
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTTC", "\x0\x2\x0\x3\x3\x3\x3\x1", "MASLVQTG"), 8, 7);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(11, 11, 34));
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel(&"GAAAATCT"[8], &"\x2\x0\x0\x0\x0\x3\x1\x3"[8], "MASLVQTG"), -8, 7);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(11, 11, 28));
 
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTTCA", "\x0\x2\x0\x3\x3\x3\x3\x1\x0", "MASLVQTGK"), 9, 8);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(13, 13, 39));
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel(&"TGAAAATCT"[9], &"\x3\x2\x0\x0\x0\x0\x3\x1\x3"[9], "MASLVQTGK"), -9, 8);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(13, 13, 28));
+
+		(void)forefront;
+	}
+	dz_destroy(dz);
+}
+#endif
+
+/* a small graph */
+unittest( "extend.small" ) {
+	struct dz_s *dz = dz_init(DZ_UNITTEST_SCORE_PARAMS);
+	ut_assert(dz != NULL);
+
+	for(size_t trial = 0; trial < 4; trial++) {
+		struct dz_query_s const *q = dz_pack_query(dz, dz_unittest_query,
+			  trial == 0 ? dz_unittest_query_length
+			: trial == 1 ? 3
+			: trial == 2 ? 4
+			:              7
+		);
+		struct dz_forefront_s const *forefronts[5] = { NULL };
+
+		/*
+		 * AG---TTTT------CTGA
+		 *   \ /    \    /
+		 *    C      CATT
+		 */
+		forefronts[0] = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AG", "\x0\x2", "MA"), 2, 1);
+		ut_assert(forefronts[0] != NULL && forefronts[0]->max == dz_ut_sel(4, 4, 9));
+
+		forefronts[1] = dz_extend(dz, q, &forefronts[0], 1, dz_ut_sel("C", "\x1", "T"), 1, 2);
+		ut_assert(forefronts[1] != NULL && forefronts[1]->max == dz_ut_sel(6, 6, 14));
+		if(trial == 1) { continue; }
+
+		forefronts[2] = dz_extend(dz, q, &forefronts[0], 2, dz_ut_sel("TTTT", "\x3\x3\x3\x3", "LVQT"), 4, 3);
+		if(trial == 2) {
+			ut_assert(forefronts[2] != NULL && forefronts[2]->max == dz_ut_sel(8, 8, 18));
+			continue;
+		}
+		ut_assert(forefronts[2] != NULL && forefronts[2]->max == dz_ut_sel(14, 14, 32));
+		if(trial == 3) { continue; }
+
+		forefronts[3] = dz_extend(dz, q, &forefronts[2], 1, dz_ut_sel("CATT", "\x1\x0\x3\x3", "CKAK"), 4, 4);
+		ut_assert(forefronts[3] != NULL && forefronts[3]->max == dz_ut_sel(22, 22, 43));
+
+		forefronts[4] = dz_extend(dz, q, &forefronts[2], 2, dz_ut_sel("CTGA", "\x1\x3\x2\x0", "QLTL"), 4, 5);
+		ut_assert(forefronts[4] != NULL && forefronts[4]->max == dz_ut_sel(30, 30, 61));
+	}
 	dz_destroy(dz);
 }
 
@@ -1348,7 +1532,7 @@ unittest( "trace" ) {
 	struct dz_s *dz = dz_init(DZ_UNITTEST_SCORE_PARAMS);
 	ut_assert(dz != NULL);
 
-	struct dz_query_s *q = dz_pack_query(dz, dz_unittest_query, strlen((char const *)dz_unittest_query));
+	struct dz_query_s *q = dz_pack_query(dz, dz_unittest_query, dz_unittest_query_length);
 	struct dz_forefront_s const *forefront = NULL;
 	struct dz_alignment_s *aln = NULL;
 
