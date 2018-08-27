@@ -1047,12 +1047,12 @@ unittest() {
 	_end_column(cdp, w.r.spos, w.r.epos); \
 	cdp; \
 })
-#define _fill_column(w, pdp, query, rt, rrem) ({ \
+#define _fill_column(w, pdp, query, rt, rrem, init_s) ({ \
 	/* load the base */ \
 	_init_rch(query, rt, rrem); \
 	struct dz_swgv_s *cdp = _begin_column(w, rch, rrem); \
 	/* init vectors */ \
-	__m128i f = minv, ps = minv, maxv = _mm_set1_epi16(INT16_MIN); \
+	__m128i f = minv, ps = _mm_set1_epi16(init_s), maxv = _mm_set1_epi16(INT16_MIN); \
 	__m128i const xtv = _mm_set1_epi16(w.inc - self->xt);	/* next offset == current max thus X-drop threshold is always -xt */ \
 	/* until the bottommost vertically placed band... */ \
 	uint32_t sspos = w.r.spos;					/* save spos on the stack */ \
@@ -1085,14 +1085,15 @@ dz_pp_cat(_forefront_, __LINE__):; \
 })
 
 /**
- * @fn dz_extend
+ * @fn dz_extend_intl
  */
 static __dz_vectorize
-struct dz_forefront_s const *dz_extend(
+struct dz_forefront_s const *dz_extend_intl(
 	struct dz_s *self,
 	struct dz_query_s const *query,
 	struct dz_forefront_s const **forefronts, size_t n_forefronts,
-	char const *ref, int32_t rlen, uint32_t rid)
+	char const *ref, int32_t rlen, uint32_t rid,
+	uint16_t init_s)
 {
 	size_t const L = sizeof(__m128i) / sizeof(uint16_t);
 	if(n_forefronts == 0) { return(NULL); }										/* invalid */
@@ -1137,10 +1138,37 @@ struct dz_forefront_s const *dz_extend(
 	uint8_t const *rt = (uint8_t const *)&ref[rrem - (rlen < 0)];
 
 	while(rrem != 0 && w.r.spos < w.r.epos) {
-		pdp = _fill_column(w, pdp, query, rt, rrem); rrem += dir;
+		pdp = _fill_column(w, pdp, query, rt, rrem, init_s); rrem += dir;
 	}
 	return(_end_matrix(pdp, &w, rrem));					/* update max vector (pdp always points at the last vector) */
 }
+
+/**
+ * @fn dz_extend, dz_scan
+ * @brief dz_extend for semi-global alignment (head gaps are penalized for the both directions),
+ * and dz_scan for searching anchor (head gap is only penalized for the query side).
+ *
+ * NOTE: DZ_N_AS_UNMATCHING_BASE is not recommended when dz_scan is used
+ */
+static __dz_vectorize
+struct dz_forefront_s const *dz_extend(
+	struct dz_s *self,
+	struct dz_query_s const *query,
+	struct dz_forefront_s const **forefronts, size_t n_forefronts,
+	char const *ref, int32_t rlen, uint32_t rid)
+{
+	return(dz_extend_intl(self, query, forefronts, n_forefronts, ref, rlen, rid, INT16_MIN));
+}
+static __dz_vectorize
+struct dz_forefront_s const *dz_scan(
+	struct dz_s *self,
+	struct dz_query_s const *query,
+	struct dz_forefront_s const **forefronts, size_t n_forefronts,
+	char const *ref, int32_t rlen, uint32_t rid)
+{
+	return(dz_extend_intl(self, query, forefronts, n_forefronts, ref, rlen, rid, 0));
+}
+
 
 #undef _end_matrix
 #undef _begin_column_head
