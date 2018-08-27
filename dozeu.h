@@ -51,9 +51,7 @@ extern "C" {
 #  define dz_cmp_max(x, y)			( (x) > (y) )
 #endif
 
-/*
- *
- */
+/* default encoding: ascii */
 #ifndef DZ_PROTEIN
 #  if !defined(DZ_NUCL_ASCII) && !defined(DZ_NUCL_2BIT)
 #    define DZ_NUCL_ASCII
