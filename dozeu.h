@@ -1343,7 +1343,7 @@ int64_t dz_calc_max_rpos(
 	(void)self;
 	struct dz_cap_s const *pcap = forefront->mcap;
 	int32_t rpos = (pcap == dz_ccap(forefront)) ? 0 : pcap->rrem;
-	return((int64_t)rpos);									/* signed expansion */
+	return((int64_t)(forefront->rlen - rpos));				/* signed expansion */
 }
 
 /**
@@ -1393,6 +1393,47 @@ uint64_t dz_calc_max_pos(
 	debug("forefront(%p), pcap(%p), rrem(%d), rlen(%d)", forefront, pcap, (int32_t)pcap->rrem, (int32_t)forefront->rlen);
 	return((dz_calc_max_rpos(self, forefront)<<32) | dz_calc_max_qpos(self, forefront));
 }
+
+unittest( "calc_max.small" ) {
+	struct dz_s *dz = dz_init(DZ_UNITTEST_SCORE_PARAMS);
+	ut_assert(dz != NULL);
+
+	struct dz_query_s *q = dz_pack_query(dz, dz_unittest_query, dz_unittest_query_length);
+	struct dz_forefront_s const *forefronts[5] = { NULL };
+
+	/*
+	 * AG---TTTT------CTGA
+	 *   \ /    \    /
+	 *    C      CATT
+	 */
+	forefronts[0] = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AG", "\x0\x2", "MA"), 2, 1);
+	ut_assert(dz_calc_max_rpos(dz, forefronts[0]) == 2);
+	ut_assert(dz_calc_max_qpos(dz, forefronts[0]) == 2);
+	ut_assert(dz_calc_max_pos(dz, forefronts[0]) == ((2LL<<32) | 2LL));
+
+	forefronts[1] = dz_extend(dz, q, &forefronts[0], 1, dz_ut_sel("C", "\x1", "T"), 1, 2);
+	ut_assert(dz_calc_max_rpos(dz, forefronts[1]) == 1);
+	ut_assert(dz_calc_max_qpos(dz, forefronts[1]) == 3);
+	ut_assert(dz_calc_max_pos(dz, forefronts[1]) == ((1LL<<32) | 3LL));
+
+	forefronts[2] = dz_extend(dz, q, &forefronts[0], 2, dz_ut_sel("TTTT", "\x3\x3\x3\x3", "LVQT"), 4, 3);
+	ut_assert(dz_calc_max_rpos(dz, forefronts[2]) == 4);
+	ut_assert(dz_calc_max_qpos(dz, forefronts[2]) == 7);
+	ut_assert(dz_calc_max_pos(dz, forefronts[2]) == ((4LL<<32) | 7LL));
+
+	forefronts[3] = dz_extend(dz, q, &forefronts[2], 1, dz_ut_sel("CATG", "\x1\x0\x3\x2", "CKAM"), 4, 4);
+	ut_assert(dz_calc_max_rpos(dz, forefronts[3]) == 3);
+	ut_assert(dz_calc_max_qpos(dz, forefronts[3]) == 10);
+	ut_assert(dz_calc_max_pos(dz, forefronts[3]) == ((3LL<<32) | 10LL));
+
+	forefronts[4] = dz_extend(dz, q, &forefronts[2], 2, dz_ut_sel("CTGA", "\x1\x3\x2\x0", "QLTL"), 4, 5);
+	ut_assert(dz_calc_max_rpos(dz, forefronts[4]) == 4);
+	ut_assert(dz_calc_max_qpos(dz, forefronts[4]) == 15);
+	ut_assert(dz_calc_max_pos(dz, forefronts[4]) == ((4LL<<32) | 15LL));
+
+	dz_destroy(dz);
+}
+
 
 /* traceback macros */
 #define _is_head(_cap)				( (_cap)->r.epos == 0 )
