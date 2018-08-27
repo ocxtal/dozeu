@@ -798,7 +798,6 @@ struct dz_query_s *dz_pack_query_forward(
 	 * tentative support of full-length bonus; precaclulated bonus score is saved at q->bonus[0] and q->bonus[1]; [0] for non-tail vector and [1] for tail vector
 	 */
 	q->bonus[L + (qlen % L)] = self->bonus;
-	q->arr[0] = 0;
 
 	/*
 	 * ASCII to 2-bit conversion table (shifted by two bits to be used as the upper (row) shuffle index)
@@ -813,7 +812,7 @@ struct dz_query_s *dz_pack_query_forward(
 			qA, qC, qG, qT, qN, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, qN
 		#endif
 	};
-	__m128i pv = _mm_setzero_si128();
+	__m128i pv = _mm_set1_epi8((int8_t)qN);
 	__m128i const fv = _mm_set1_epi8(0x0f);														/* conversion mask */
 	__m128i const cv = _mm_load_si128((__m128i const *)conv);									/* conversion table */
 
@@ -850,7 +849,6 @@ struct dz_query_s *dz_pack_query_reverse(
 		.bonus = { 0 }
 	};
 	q->bonus[L + (qlen % L)] = self->bonus;
-	q->arr[0] = 0;
 
 	static uint8_t const conv[16] __attribute__(( aligned(16) )) = {
 		#ifdef DZ_NUCL_ASCII
@@ -862,7 +860,7 @@ struct dz_query_s *dz_pack_query_reverse(
 	static uint8_t const rev[16] __attribute__(( aligned(16) )) = {
 		15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0
 	};
-	__m128i pv = _mm_setzero_si128();
+	__m128i pv = _mm_set1_epi8((int8_t)qN);
 	__m128i const fv = _mm_set1_epi8(0x0f);
 	__m128i const cv = _mm_load_si128((__m128i const *)conv), rv = _mm_load_si128((__m128i const *)rev);
 
