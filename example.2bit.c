@@ -23,6 +23,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#define UNITTEST				1
 #define DZ_NUCL_2BIT								/* use 2bit encoding for input sequences */
 #define DZ_FULL_LENGTH_BONUS						/* use full-length bonus feature */
 #define DZ_CIGAR_OP				0x44493d58			/* 'D', 'I', '=', 'X'; the default is 0x04030201 */
@@ -30,6 +31,8 @@
 
 int main(int argc, char *argv[])
 {
+	unittest_main(argc, argv);						/* just for testing */
+
 	/* init score matrix and memory arena */
 	int8_t const M = 2, X = -3, GI = 5, GE = 1;		/* match, mismatch, gap open, and gap extend; g(k) = GI + k + GE for k-length gap */
 	int8_t const xdrop_threshold = 70, full_length_bonus = 10;
