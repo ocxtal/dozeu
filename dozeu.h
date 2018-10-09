@@ -1003,22 +1003,24 @@ unittest() {
 	dz_destroy(dz);
 }
 
-#define _merge_column(w, adj, forefronts, n_forefronts, query) ({ \
+#define _merge_column(w, adj, forefronts, n_forefronts, query, init_s) ({ \
 	for(size_t i = 0; i < n_forefronts; i++) { \
 		/* update max and pos */ \
 		w.r.spos = dz_min2(w.r.spos, forefronts[i]->r.spos); \
 		w.r.epos = dz_max2(w.r.epos, forefronts[i]->r.epos); \
 		w.rsum = dz_max2(w.rsum, forefronts[i]->rsum); \
 		w.rcnt = dz_max2(w.rcnt, forefronts[i]->rcnt); \
-		w.max = dz_max2(w.max, forefronts[i]->max); \
+		if(init_s != 0) { w.max = dz_max2(w.max, forefronts[i]->max); } \
 		debug("i(%lu), [%u, %u), inc(%d), max(%d)", i, forefronts[i]->r.spos, forefronts[i]->r.epos, forefronts[i]->inc, forefronts[i]->max); \
 	} \
 	w.r.spos = w.r.spos > INT32_MAX ? 0 : w.r.spos; \
 	w.r.epos = dz_min2(w.r.epos, query->blen);						/* make sure epos and p-iteration index is no larger than blen */ \
 	debug("start extension [%u, %u), inc(%d), max(%d), stack(%p, %p), rlen(%d)", w.r.spos, w.r.epos, w.inc, w.max, dz_mem(self)->stack.top, dz_mem(self)->stack.end, (int32_t)rlen); \
-	for(size_t i = 0; i < n_forefronts; i++) { \
-		adj[i] = w.max - (forefronts[i]->max - forefronts[i]->inc);	/* base = max - inc */ \
-		debug("i(%lu), adj(%lu)", i, adj[i]); \
+	if(init_s != 0) { \
+		for(size_t i = 0; i < n_forefronts; i++) { \
+			adj[i] = w.max - (forefronts[i]->max - forefronts[i]->inc);	/* base = max - inc */ \
+			debug("i(%lu), adj(%lu)", i, adj[i]); \
+		} \
 	} \
 	/* once; merge incoming vectors */ \
 	struct dz_swgv_s *cdp = _begin_column_head(w.r.spos, w.r.epos, w.max, forefronts, n_forefronts);	/* allocate memory for the first column */ \
@@ -1029,7 +1031,7 @@ unittest() {
 	/* paste the last vectors */ \
 	for(size_t i = 0; i < n_forefronts; i++) { \
 		struct dz_swgv_s const *tdp = (struct dz_swgv_s const *)forefronts[i] - forefronts[i]->r.epos; \
-		__m128i const adjv = _mm_set1_epi16(adj[i]); \
+		__m128i const adjv = _mm_set1_epi16(init_s == 0 ? 0 : adj[i]); \
 		for(uint64_t p = forefronts[i]->r.spos; p < forefronts[i]->r.epos; p++) { \
 			/* adjust offset */ \
 			__m128i e = _mm_subs_epi16(_mm_load_si128(&tdp[p].e), adjv); \
@@ -1129,7 +1131,7 @@ struct dz_forefront_s const *dz_extend_intl(
 
 	/* first iterate over the incoming edge objects to get the current max */
 	uint64_t adj[n_forefronts];							/* keep variable length array out of statement expression to avoid a bug of icc */
-	struct dz_swgv_s *pdp = _merge_column(w, adj, forefronts, n_forefronts, query);
+	struct dz_swgv_s *pdp = _merge_column(w, adj, forefronts, n_forefronts, query, init_s);
 
 	/* fetch the first base */
 	int64_t rrem = rlen, dir = rlen < 0 ? 1 : -1;
