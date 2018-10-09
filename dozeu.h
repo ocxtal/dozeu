@@ -669,7 +669,6 @@ void dz_flush(
 	return;
 }
 
-#ifdef UNITTEST
 #if defined(DZ_NUCL_ASCII)
 static size_t const dz_unittest_query_length = 560;
 static char const *dz_unittest_query =
@@ -766,7 +765,6 @@ static int8_t const dz_unittest_score_matrix[DZ_MAT_SIZE * DZ_MAT_SIZE] = {
 #define DZ_UNITTEST_SCORE_PARAMS	dz_unittest_score_matrix, 5, 1, 20, 0
 #else
 #define DZ_UNITTEST_SCORE_PARAMS	dz_unittest_score_matrix, 5, 1, 20
-#endif
 #endif
 
 unittest() {
