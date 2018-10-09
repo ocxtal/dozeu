@@ -480,7 +480,7 @@ unittest() {
 #define _calc_score_profile(_i) ({ \
 	__m128i qv = _mm_loadl_epi64((__m128i const *)&parr[(_i) * L]); \
 	__m128i sc = _mm_cvtepi8_epi16(_mm_shuffle_epi8(_mm_load_si128((__m128i const *)self->matrix), _mm_or_si128(rv, qv))); \
-	print_vector(_mm_cvtepi8_epi16(rv)); print_vector(_mm_cvtepi8_epi16(qv)); \
+	/* print_vector(_mm_cvtepi8_epi16(rv)); print_vector(_mm_cvtepi8_epi16(qv)); */ \
 	sc; \
 })
 #elif defined(DZ_NUCL_2BIT)
@@ -515,15 +515,15 @@ unittest() {
 #define _update_vector(_p) { \
 	__m128i sc = _calc_score_profile(_p); \
 	__m128i te = _mm_subs_epi16(_mm_max_epi16(e, _mm_subs_epi16(s, giv)), gev1); \
-	/* print_vector(_mm_alignr_epi8(s, ps, 14)); */ print_vector(sc); \
+	/* print_vector(_mm_alignr_epi8(s, ps, 14)); print_vector(sc); */ \
 	__m128i ts = _mm_max_epi16(te, _mm_adds_epi16(sc, _mm_alignr_epi8(s, ps, 14))); ps = s; \
 	__m128i tf = _mm_max_epi16(_mm_subs_epi16(ts, giv), _mm_subs_epi16(_mm_alignr_epi8(minv, f, 14), gev1)); \
 	tf = _mm_max_epi16(tf, _mm_subs_epi16(_mm_alignr_epi8(tf, minv, 14), gev1)); \
 	tf = _mm_max_epi16(tf, _mm_subs_epi16(_mm_alignr_epi8(tf, minv, 12), gev2)); \
 	tf = _mm_max_epi16(tf, _mm_subs_epi16(_mm_alignr_epi8(tf, minv, 8), gev4)); \
-	ts = _mm_max_epi16(ts, tf); \
+	ts = _mm_max_epi16(ts, tf); print_vector(ts); \
 	maxv = _mm_max_epi16(maxv, _add_bonus(_p, ts)); \
-	/* print_vector(te); */ print_vector(_add_bonus(_p, ts)); /* print_vector(tf); */ print_vector(maxv); \
+	/* print_vector(te); print_vector(_add_bonus(_p, ts)); print_vector(tf); */ print_vector(maxv); \
 	e = te; f = tf; s = ts; \
 }
 #define _store_vector(_p) { \
@@ -1164,6 +1164,7 @@ struct dz_forefront_s const *dz_scan(
 	struct dz_forefront_s const **forefronts, size_t n_forefronts,
 	char const *ref, int32_t rlen, uint32_t rid)
 {
+	debug("dz_scan called");
 	return(dz_extend_intl(self, query, forefronts, n_forefronts, ref, rlen, rid, 0));
 }
 
