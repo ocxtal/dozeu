@@ -432,6 +432,7 @@ unittest() {
 #define _end_column(_p, _spos, _epos) ({ \
 	/* write back the stack pointer and return a cap */ \
 	struct dz_range_s *r = dz_range(&dz_swgv(_p)[(_epos)]); \
+	debug("create range(%p), [%u, %u)", r, (_spos), (_epos)); \
 	dz_mem(self)->stack.top = (uint8_t *)r; \
 	r->spos = (_spos); r->epos = (_epos); \
 	(struct dz_cap_s *)r; \
@@ -473,7 +474,7 @@ unittest() {
 #define _init_rch(_query, _rt, _rrem) \
 	_init_bonus(_query); \
 	uint32_t rch = conv[_rt[-_rrem] & 0x0f]; \
-	debug("rch(%c, %u, %x)", _rt[-_rrem], rch, rch); \
+	/* debug("rch(%c, %u, %x)", _rt[-_rrem], rch, rch); */ \
 	uint8_t const *parr = (_query)->arr; \
 	__m128i const rv = _mm_set1_epi8(rch);
 
@@ -487,7 +488,7 @@ unittest() {
 #define _init_rch(_query, _rt, _rrem) \
 	_init_bonus(_query); \
 	uint32_t rch = dir < 0 ? _rt[-_rrem] : (_rt[-_rrem] ^ 0x03); \
-	debug("rch(%c, %u, %x)", _rt[-_rrem], rch, rch); \
+	/* debug("rch(%c, %u, %x)", _rt[-_rrem], rch, rch); */ \
 	uint8_t const *parr = (_query)->arr; \
 	__m128i const rv = _mm_set1_epi8(rch);
 
@@ -500,7 +501,7 @@ unittest() {
 #define _init_rch(_query, _rt, _rrem) \
 	_init_bonus(_query); \
 	uint32_t rch = _rt[-_rrem] & 0x1f; \
-	debug("rch(%c, %u, %x)", _rt[-_rrem], rch, rch); \
+	/* debug("rch(%c, %u, %x)", _rt[-_rrem], rch, rch); */ \
 	int8_t const *parr = (int8_t const *)&(_query)->arr[rch * (_query)->blen * L];
 
 #define _calc_score_profile(_i) ({ \
@@ -523,7 +524,7 @@ unittest() {
 	tf = _mm_max_epi16(tf, _mm_subs_epi16(_mm_alignr_epi8(tf, minv, 8), gev4)); \
 	ts = _mm_max_epi16(ts, tf); print_vector(ts); \
 	maxv = _mm_max_epi16(maxv, _add_bonus(_p, ts)); \
-	/* print_vector(te); print_vector(_add_bonus(_p, ts)); print_vector(tf); */ print_vector(maxv); \
+	/* print_vector(te); print_vector(_add_bonus(_p, ts)); print_vector(tf); print_vector(maxv);*/ \
 	e = te; f = tf; s = ts; \
 }
 #define _store_vector(_p) { \
@@ -595,6 +596,7 @@ struct dz_s *dz_init_intl(
 	self->xt = gi + ge * max_gap_len;			/* X-drop threshold */
 	self->bonus = full_length_bonus;
 	self->max_gap_len = max_gap_len;			/* save raw value */
+	debug("gi(%u), ge(%u), xdrop_threshold(%u), full_length_bonus(%u), max_gap_len(%lu)", gi, ge, self->xt, self->bonus, self->max_gap_len);
 
 	/* create root head */
 	struct dz_cap_s *cap = (struct dz_cap_s *)dz_mem_malloc(mem, sizeof(struct dz_cap_s));
@@ -831,7 +833,7 @@ struct dz_query_s *dz_pack_query_forward(
 		q->arr[i + 1] = qS;
 	}
 
-	debug("qlen(%lu), q(%s)", qlen, query);
+	debug("qlen(%lu), q(%.*s)", qlen, (int)qlen, query);
 	return(q);
 }
 static __dz_vectorize
@@ -878,7 +880,7 @@ struct dz_query_s *dz_pack_query_reverse(
 		q->arr[i + 1] = qS;
 	}
 
-	debug("qlen(%lu), q(%s)", qlen, query);
+	debug("qlen(%lu), q(%.*s)", qlen, (int)qlen, query);
 	return(q);
 }
 
@@ -1011,7 +1013,7 @@ unittest() {
 		w.rsum = dz_max2(w.rsum, forefronts[i]->rsum); \
 		w.rcnt = dz_max2(w.rcnt, forefronts[i]->rcnt); \
 		if(init_s != 0) { w.max = dz_max2(w.max, forefronts[i]->max); } \
-		debug("i(%lu), [%u, %u), inc(%d), max(%d)", i, forefronts[i]->r.spos, forefronts[i]->r.epos, forefronts[i]->inc, forefronts[i]->max); \
+		debug("i(%lu, %p), [%u, %u), inc(%d), max(%d)", i, forefronts[i], forefronts[i]->r.spos, forefronts[i]->r.epos, forefronts[i]->inc, forefronts[i]->max); \
 	} \
 	w.r.spos = w.r.spos > INT32_MAX ? 0 : w.r.spos; \
 	w.r.epos = dz_min2(w.r.epos, query->blen);						/* make sure epos and p-iteration index is no larger than blen */ \
@@ -1127,7 +1129,6 @@ struct dz_forefront_s const *dz_extend_intl(
 	w.rlen = rlen;
 	w.rid = rid;
 	w.query = query;
-	debug("max(%d), inc(%d)", w.max, w.inc);
 
 	/* first iterate over the incoming edge objects to get the current max */
 	uint64_t adj[n_forefronts];							/* keep variable length array out of statement expression to avoid a bug of icc */
@@ -1139,6 +1140,7 @@ struct dz_forefront_s const *dz_extend_intl(
 
 	while(rrem != 0 && w.r.spos < w.r.epos) {
 		pdp = _fill_column(w, pdp, query, rt, rrem, init_s); rrem += dir;
+		debug("rrem(%d), [%u, %u)", rrem, w.r.spos, w.r.epos);
 	}
 	return(_end_matrix(pdp, &w, rrem));					/* update max vector (pdp always points at the last vector) */
 }
