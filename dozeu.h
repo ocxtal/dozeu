@@ -224,7 +224,7 @@ dz_static_assert(sizeof(struct dz_s) % sizeof(__m128i) == 0);
 #define dz_mem(_self)				( (struct dz_mem_s *)(_self) - 1 )
 
 #define dz_root(_self)				( (struct dz_forefront_s const **)(&_self->root) )
-#define dz_is_terminated(_ff)		( dz_cff(_ff)->r.epos == 0 )
+#define dz_is_terminated(_ff)		( dz_cff(_ff)->r.spos >= dz_cff(_ff)->r.epos )
 #define dz_gt(_ff)					( dz_cff(_ff)->inc > 0 )
 #define dz_geq(_ff)					( dz_cff(_ff)->mcap != NULL )
 
@@ -439,7 +439,7 @@ unittest() {
 #define _end_matrix(_p, _wp, _rrem) ({ \
 	/* create forefront object */ \
 	struct dz_forefront_s *forefront = dz_forefront(&(dz_swgv(_p))[(_wp)->r.epos]); \
-	if((_wp)->r.spos >= (_wp)->r.epos) { (_wp)->r.epos = 0; } \
+	/* if((_wp)->r.spos >= (_wp)->r.epos) { (_wp)->r.epos = 0; } */ \
 	forefront->rid = (_wp)->rid; \
 	forefront->rlen = (_wp)->rlen; \
 	forefront->rsum = (_wp)->rsum + ((_wp)->rlen < 0 ? -1 : 1) * ((_wp)->rlen - (_rrem)); \
@@ -1060,7 +1060,7 @@ unittest() {
 		_load_vector(&pdp[p]); _update_vector(p); \
 		if(dz_unlikely(_test_xdrop(s, xtv))) {	/* mark _unlikely to move out of the core loop */ \
 			/* drop either leading or trailing vector, skip the forefront extension when the forefront is clipped */ \
-			if(p == w.r.spos) { w.r.spos++; } else { w.r.epos = p; goto dz_pp_cat(_forefront_, __LINE__); } \
+			if(p == w.r.spos) { w.r.spos++; cdp--; continue; } else { w.r.epos = p; goto dz_pp_cat(_forefront_, __LINE__); } \
 		} \
 		_store_vector(&cdp[p]); \
 	} \
@@ -1076,7 +1076,7 @@ unittest() {
 	} \
 dz_pp_cat(_forefront_, __LINE__):; \
 	/* create cap object that contains [spos, epos) range (for use in the traceback routine) */ \
-	struct dz_cap_s *cap = _end_column(cdp, sspos, w.r.epos); \
+	struct dz_cap_s *cap = _end_column(cdp, w.r.spos, w.r.epos); \
 	int32_t inc = _hmax_vector(maxv); \
 	if(dz_cmp_max(inc, w.inc)) { w.inc = inc; w.mcap = cap; }/* update max; the actual score (absolute score accumulated from the origin) is expressed as max + inc; 2 x cmov */ \
 	/* FIXME: rescue overflow */ \
