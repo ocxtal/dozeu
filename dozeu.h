@@ -556,12 +556,15 @@ unittest() {
 static __dz_vectorize
 struct dz_s *dz_init_intl(
 	int8_t const *score_matrix,		/* match award in positive, mismatch penalty in negative. s(A,A) at [0], s(A,C) at [1], ... s(T,T) at [15] where s(ref_base, query_base) is a score function */
-	uint16_t gap_open,				/* gap penalties in positive */
-	uint16_t gap_extend,
+	uint16_t ins_open,				/* gap penalties in positive */
+	uint16_t ins_extend,
+	uint16_t del_open,				/* gap penalties in positive */
+	uint16_t del_extend,
 	uint64_t max_gap_len,			/* as X-drop threshold */
 	uint16_t full_length_bonus)		/* end-to-end mapping bonus; only activated when compiled with -DDZ_FULL_LENGTH_BONUS */
 {
-	size_t const L = sizeof(__m128i) / sizeof(uint16_t), gi = gap_open, ge = gap_extend;
+	size_t const L = sizeof(__m128i) / sizeof(uint16_t);
+	uint16_t const gi = dz_max2(ins_open, del_open), ge = dz_max2(ins_extend, del_extend);
 	/*
 	static uint8_t const transpose[16] __attribute__(( aligned(16) )) = {
 		0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15
@@ -596,14 +599,14 @@ struct dz_s *dz_init_intl(
 	#endif
 
 	/* insertion penalties */
-	__m128i const iiv = _mm_set1_epi16(gi);
-	__m128i const iev = _mm_set1_epi16(ge);
+	__m128i const iiv = _mm_set1_epi16(ins_open);
+	__m128i const iev = _mm_set1_epi16(ins_extend);
 	_mm_store_si128((__m128i *)self->iiv, iiv);
 	_mm_store_si128((__m128i *)self->iev, iev);
 
 	/* deletion penalties */
-	__m128i const div = _mm_set1_epi16(gi);
-	__m128i const dev = _mm_set1_epi16(ge);
+	__m128i const div = _mm_set1_epi16(del_open);
+	__m128i const dev = _mm_set1_epi16(del_extend);
 	_mm_store_si128((__m128i *)self->div, div);
 	_mm_store_si128((__m128i *)self->dev, dev);
 
@@ -652,8 +655,21 @@ struct dz_s *dz_init(
 	uint64_t max_gap_len,
 	uint16_t full_length_bonus)
 {
-	return(dz_init_intl(score_matrix, gap_open, gap_extend, max_gap_len, full_length_bonus));
+	return(dz_init_intl(score_matrix, gap_open, gap_extend, gap_open, gap_extend, max_gap_len, full_length_bonus));
 }
+static __dz_vectorize
+struct dz_s *dz_initx(
+	int8_t const *score_matrix,
+	uint16_t ins_open,
+	uint16_t ins_extend,
+	uint16_t del_open,
+	uint16_t del_extend,
+	uint64_t max_gap_len,
+	uint16_t full_length_bonus)
+{
+	return(dz_init_intl(score_matrix, ins_open, ins_extend, del_open, del_extend, max_gap_len, full_length_bonus));
+}
+
 #else
 static __dz_vectorize
 struct dz_s *dz_init(
@@ -662,8 +678,20 @@ struct dz_s *dz_init(
 	uint16_t gap_extend,
 	uint64_t max_gap_len)
 {
-	return(dz_init_intl(score_matrix, gap_open, gap_extend, max_gap_len, 0));
+	return(dz_init_intl(score_matrix, gap_open, gap_extend, gap_open, gap_extend, max_gap_len, 0));
 }
+static __dz_vectorize
+struct dz_s *dz_initx(
+	int8_t const *score_matrix,
+	uint16_t ins_open,
+	uint16_t ins_extend,
+	uint16_t del_open,
+	uint16_t del_extend,
+	uint64_t max_gap_len)
+{
+	return(dz_init_intl(score_matrix, ins_open, ins_extend, del_open, del_extend, max_gap_len, 0));
+}
+
 #endif
 
 static __dz_vectorize
