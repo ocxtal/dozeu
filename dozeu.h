@@ -219,7 +219,14 @@ struct dz_stack_s { struct dz_mem_block_s *curr; uint8_t *top, *end; uint64_t _p
 struct dz_mem_s { struct dz_mem_block_s blk; struct dz_stack_s stack; };
 #define dz_mem_stack_rem(_mem)		( (size_t)((_mem)->stack.end - (_mem)->stack.top) )
 
-struct dz_s { int8_t matrix[32]; uint16_t giv[8], gev[8], xt, bonus, max_gap_len, _pad[9]; struct dz_forefront_s const *root; int8_t protein_matrix[]; };
+struct dz_s {
+	int8_t matrix[32];					/* DNA score matrix */
+	uint16_t iiv[8], iev[8];
+	uint16_t div[8], dev[8];			/* deletion: open and extend */
+	uint16_t xt, bonus, max_gap_len, _pad[9];
+	struct dz_forefront_s const *root;
+	int8_t protein_matrix[];			/* allocated at the tail if not DNA matrix */
+};
 dz_static_assert(sizeof(struct dz_s) % sizeof(__m128i) == 0);
 #define dz_mem(_self)				( (struct dz_mem_s *)(_self) - 1 )
 
@@ -514,13 +521,13 @@ unittest() {
 	__m128i s = _mm_load_si128((__m128i const *)(&dz_cswgv(_p)->s)); /* print_vector(s); */
 #define _update_vector(_p) { \
 	__m128i sc = _calc_score_profile(_p); \
-	__m128i te = _mm_subs_epi16(_mm_max_epi16(e, _mm_subs_epi16(s, giv)), gev1); \
+	__m128i te = _mm_subs_epi16(_mm_max_epi16(e, _mm_subs_epi16(s, div)), dev); \
 	/* print_vector(_mm_alignr_epi8(s, ps, 14)); */ print_vector(sc); \
 	__m128i ts = _mm_max_epi16(te, _mm_adds_epi16(sc, _mm_alignr_epi8(s, ps, 14))); ps = s; \
-	__m128i tf = _mm_max_epi16(_mm_subs_epi16(ts, giv), _mm_subs_epi16(_mm_alignr_epi8(minv, f, 14), gev1)); \
-	tf = _mm_max_epi16(tf, _mm_subs_epi16(_mm_alignr_epi8(tf, minv, 14), gev1)); \
-	tf = _mm_max_epi16(tf, _mm_subs_epi16(_mm_alignr_epi8(tf, minv, 12), gev2)); \
-	tf = _mm_max_epi16(tf, _mm_subs_epi16(_mm_alignr_epi8(tf, minv, 8), gev4)); \
+	__m128i tf = _mm_max_epi16(_mm_subs_epi16(ts, iiv), _mm_subs_epi16(_mm_alignr_epi8(minv, f, 14), iev1)); \
+	tf = _mm_max_epi16(tf, _mm_subs_epi16(_mm_alignr_epi8(tf, minv, 14), iev1)); \
+	tf = _mm_max_epi16(tf, _mm_subs_epi16(_mm_alignr_epi8(tf, minv, 12), iev2)); \
+	tf = _mm_max_epi16(tf, _mm_subs_epi16(_mm_alignr_epi8(tf, minv, 8), iev4)); \
 	ts = _mm_max_epi16(ts, tf); \
 	maxv = _mm_max_epi16(maxv, _add_bonus(_p, ts)); \
 	/* print_vector(te); */ print_vector(_add_bonus(_p, ts)); /* print_vector(tf); */ print_vector(maxv); \
@@ -588,10 +595,18 @@ struct dz_s *dz_init_intl(
 		}
 	#endif
 
-	__m128i const giv = _mm_set1_epi16(gi);
-	__m128i const gev = _mm_set1_epi16(ge);
-	_mm_store_si128((__m128i *)self->giv, giv);
-	_mm_store_si128((__m128i *)self->gev, gev);
+	/* insertion penalties */
+	__m128i const iiv = _mm_set1_epi16(gi);
+	__m128i const iev = _mm_set1_epi16(ge);
+	_mm_store_si128((__m128i *)self->iiv, iiv);
+	_mm_store_si128((__m128i *)self->iev, iev);
+
+	/* deletion penalties */
+	__m128i const div = _mm_set1_epi16(gi);
+	__m128i const dev = _mm_set1_epi16(ge);
+	_mm_store_si128((__m128i *)self->div, div);
+	_mm_store_si128((__m128i *)self->dev, dev);
+
 	self->xt = gi + ge * max_gap_len;			/* X-drop threshold */
 	self->bonus = full_length_bonus;
 	self->max_gap_len = max_gap_len;			/* save raw value */
@@ -618,7 +633,7 @@ struct dz_s *dz_init_intl(
 		if(dz_unlikely(_test_xdrop(s, xtv))) { debug("p(%lu)", p); w.r.epos = p; break; }
 		_store_vector(&dp[p]);
 		if(p == 0) { s = _mm_setr_epi16(-gi, -(gi+ge), -(gi+2*ge), -(gi+3*ge), -(gi+4*ge), -(gi+5*ge), -(gi+6*ge), -(gi+7*ge)); }
-		s = _mm_subs_epi16(s, _mm_slli_epi16(gev, 3));
+		s = _mm_subs_epi16(s, _mm_slli_epi16(iev, 3));
 	}
 
 	/* done; create and return a forefront object */
@@ -1071,7 +1086,7 @@ unittest() {
 		do { \
 			if(_test_xdrop(s, xtv)) { break; } \
 			_store_vector(&cdp[w.r.epos]); w.r.epos++; \
-			f = _mm_subs_epi16(f, gev8); s = _mm_subs_epi16(s, gev8); \
+			f = _mm_subs_epi16(f, iev8); s = _mm_subs_epi16(s, iev8); \
 		} while(w.r.epos < query->blen); \
 	} \
 dz_pp_cat(_forefront_, __LINE__):; \
@@ -1117,11 +1132,18 @@ struct dz_forefront_s const *dz_extend_intl(
 	#endif
 
 	__m128i const minv = _mm_set1_epi16(DZ_CELL_MIN);
-	__m128i const giv = _mm_load_si128((__m128i const *)self->giv);
-	__m128i const gev1 = _mm_load_si128((__m128i const *)self->gev);
-	__m128i const gev2 = _mm_add_epi16(gev1, gev1);
-	__m128i const gev4 = _mm_slli_epi16(gev1, 2);
-	__m128i const gev8 = _mm_slli_epi16(gev1, 3);
+
+	/* insertion penalties */
+	__m128i const iiv = _mm_load_si128((__m128i const *)self->iiv);
+	__m128i const iev1 = _mm_load_si128((__m128i const *)self->iev);
+	__m128i const iev2 = _mm_add_epi16(iev1, iev1);
+	__m128i const iev4 = _mm_slli_epi16(iev1, 2);
+	__m128i const iev8 = _mm_slli_epi16(iev1, 3);
+
+	/* deletion penalties */
+	__m128i const div = _mm_load_si128((__m128i const *)self->div);
+	__m128i const dev = _mm_load_si128((__m128i const *)self->dev);
+
 
 	struct dz_forefront_s w = { { UINT32_MAX, 0 }, 0, 0, 0, 0, 0, 0, NULL, NULL };	/* uint32_t spos, epos, max, inc; struct dz_query_s const *query; struct dz_cap_s const *cap; */ \
 	w.rlen = rlen;
@@ -1489,7 +1511,7 @@ struct dz_alignment_s *dz_trace(
 	#define _ins(_idx) { \
 		if(_vector_idx(idx - 1) >= cap->r.spos && score == _s(f, cap, idx)) { \
 			_debug(I); \
-			while(_vector_idx(idx - 1) >= cap->r.spos && score != _s(s, cap, idx - 1) - self->gev[0] - self->giv[0]) { \
+			while(_vector_idx(idx - 1) >= cap->r.spos && score != _s(s, cap, idx - 1) - self->iev[0] - self->iiv[0]) { \
 				*--path = (DZ_CIGAR_OP>>16) & 0xff; cnt[2]++; score = _s(f, cap, idx - 1); idx--; _debug(I); \
 			} \
 			*--path = (DZ_CIGAR_OP>>16) & 0xff; cnt[2]++; score = _s(s, cap, idx - 1); idx--; \
@@ -1499,7 +1521,7 @@ struct dz_alignment_s *dz_trace(
 	#define _del(_idx) { \
 		if(dz_inside(pcap->r.spos, _vector_idx(idx), pcap->r.epos) && score == _s(e, cap, idx)) { \
 			_debug(D); \
-			while(dz_inside(pcap->r.spos, _vector_idx(idx), pcap->r.epos) && score == _s(e, pcap, idx) - self->gev[0]) { \
+			while(dz_inside(pcap->r.spos, _vector_idx(idx), pcap->r.epos) && score == _s(e, pcap, idx) - self->iev[0]) { \
 				*--path = (DZ_CIGAR_OP>>24) & 0xff; cnt[3]++; score = _s(e, pcap, idx); _load_prev_cap(e, score, _idx); _debug(D); \
 			} \
 			*--path = (DZ_CIGAR_OP>>24) & 0xff; cnt[3]++; score = _s(s, pcap, idx); rch = _load_prev_cap(s, score, _idx); \
