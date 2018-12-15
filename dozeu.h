@@ -530,12 +530,15 @@ unittest() {
 	__m128i sc = _calc_score_profile(_p); \
 	__m128i te = _mm_subs_epu16(_mm_max_epu16(e, _mm_subs_epu16(s, div)), dev); \
 	/* print_vector(_mm_alignr_epi8(s, ps, 14)); */ print_vector(sc); \
+	print_vector(_mm_alignr_epi8(s, ps, 14)); print_vector(_mm_subs_epu16(_mm_adds_epu16(sc, _mm_alignr_epi8(s, ps, 14)), ofs)); print_vector(te); \
 	__m128i ts = _mm_max_epu16(te, _mm_subs_epu16(_mm_adds_epu16(sc, _mm_alignr_epi8(s, ps, 14)), ofs)); ps = s; \
+	print_vector(ts); \
 	__m128i tf = _mm_max_epu16(_mm_subs_epu16(ts, iiv), _mm_subs_epu16(_mm_srli_si128(f, 14), iev1)); \
 	tf = _mm_max_epu16(tf, _mm_subs_epu16(_mm_slli_si128(tf, 2), iev1)); \
 	tf = _mm_max_epu16(tf, _mm_subs_epu16(_mm_slli_si128(tf, 4), iev2)); \
 	tf = _mm_max_epu16(tf, _mm_subs_epu16(_mm_slli_si128(tf, 8), iev4)); \
 	ts = _mm_max_epu16(ts, tf); \
+	print_vector(div); print_vector(dev); print_vector(iiv); print_vector(iev1); print_vector(ts); \
 	maxv = _mm_max_epu16(maxv, _add_bonus(_p, ts)); \
 	/* print_vector(te); */ print_vector(_add_bonus(_p, ts)); /* print_vector(tf); */ print_vector(maxv); \
 	e = te; f = tf; s = ts; \
@@ -1194,7 +1197,7 @@ struct dz_forefront_s const *dz_extend_intl(
 	#endif
 
 	/* constant */
-	__m128i const minv = _mm_set1_epi16(DZ_CELL_MIN);
+	__m128i const minv = _mm_set1_epi16(dz_add_ofs(DZ_CELL_MIN));
 
 	/* insertion penalties */
 	__m128i const iiv = _mm_load_si128((__m128i const *)self->iiv);
