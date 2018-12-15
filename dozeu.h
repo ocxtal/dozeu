@@ -226,7 +226,14 @@ struct dz_stack_s { struct dz_mem_block_s *curr; uint8_t *top, *end; uint64_t _p
 struct dz_mem_s { struct dz_mem_block_s blk; struct dz_stack_s stack; };
 #define dz_mem_stack_rem(_mem)		( (size_t)((_mem)->stack.end - (_mem)->stack.top) )
 
-struct dz_s { int8_t matrix[32]; uint16_t giv[8], gev[8], xt, bonus, max_gap_len, _pad[9]; struct dz_forefront_s const *root; int8_t protein_matrix[]; };
+struct dz_s {
+	int8_t matrix[32];					/* DNA score matrix */
+	uint16_t iiv[8], iev[8];
+	uint16_t div[8], dev[8];			/* deletion: open and extend */
+	uint16_t xt, bonus, max_gap_len, _pad[9];
+	struct dz_forefront_s const *root;
+	int8_t protein_matrix[];			/* allocated at the tail if not DNA matrix */
+};
 dz_static_assert(sizeof(struct dz_s) % sizeof(__m128i) == 0);
 #define dz_mem(_self)				( (struct dz_mem_s *)(_self) - 1 )
 
@@ -521,15 +528,14 @@ unittest() {
 	__m128i s = _mm_load_si128((__m128i const *)(&dz_cswgv(_p)->s)); /* print_vector(s); */
 #define _update_vector(_p) { \
 	__m128i sc = _calc_score_profile(_p); \
-	__m128i te = _mm_subs_epu16(_mm_max_epu16(e, _mm_subs_epu16(s, giv)), gev1); \
+	__m128i te = _mm_subs_epu16(_mm_max_epu16(e, _mm_subs_epu16(s, div)), dev); \
 	/* print_vector(_mm_alignr_epi8(s, ps, 14)); */ print_vector(sc); \
 	__m128i ts = _mm_max_epu16(te, _mm_subs_epu16(_mm_adds_epu16(sc, _mm_alignr_epi8(s, ps, 14)), ofs)); ps = s; \
-	__m128i tf = _mm_max_epu16(_mm_subs_epu16(ts, giv), _mm_subs_epu16(_mm_srli_si128(f, 14), gev1)); \
-	tf = _mm_max_epu16(tf, _mm_subs_epu16(_mm_slli_si128(tf, 2), gev1)); \
-	tf = _mm_max_epu16(tf, _mm_subs_epu16(_mm_slli_si128(tf, 4), gev2)); \
-	tf = _mm_max_epu16(tf, _mm_subs_epu16(_mm_slli_si128(tf, 8), gev4)); \
+	__m128i tf = _mm_max_epu16(_mm_subs_epu16(ts, iiv), _mm_subs_epu16(_mm_srli_si128(f, 14), iev1)); \
+	tf = _mm_max_epu16(tf, _mm_subs_epu16(_mm_slli_si128(tf, 2), iev1)); \
+	tf = _mm_max_epu16(tf, _mm_subs_epu16(_mm_slli_si128(tf, 4), iev2)); \
+	tf = _mm_max_epu16(tf, _mm_subs_epu16(_mm_slli_si128(tf, 8), iev4)); \
 	ts = _mm_max_epu16(ts, tf); \
-	print_vector(ts); \
 	maxv = _mm_max_epu16(maxv, _add_bonus(_p, ts)); \
 	/* print_vector(te); */ print_vector(_add_bonus(_p, ts)); /* print_vector(tf); */ print_vector(maxv); \
 	e = te; f = tf; s = ts; \
@@ -557,12 +563,15 @@ unittest() {
 static __dz_vectorize
 struct dz_s *dz_init_intl(
 	int8_t const *score_matrix,		/* match award in positive, mismatch penalty in negative. s(A,A) at [0], s(A,C) at [1], ... s(T,T) at [15] where s(ref_base, query_base) is a score function */
-	uint16_t gap_open,				/* gap penalties in positive */
-	uint16_t gap_extend,
+	uint16_t ins_open,				/* gap penalties in positive */
+	uint16_t ins_extend,
+	uint16_t del_open,				/* gap penalties in positive */
+	uint16_t del_extend,
 	uint64_t max_gap_len,			/* as X-drop threshold */
 	uint16_t full_length_bonus)		/* end-to-end mapping bonus; only activated when compiled with -DDZ_FULL_LENGTH_BONUS */
 {
-	size_t const L = sizeof(__m128i) / sizeof(uint16_t), gi = gap_open, ge = gap_extend;
+	size_t const L = sizeof(__m128i) / sizeof(uint16_t);
+	uint16_t const gi = dz_max2(ins_open, del_open), ge = dz_max2(ins_extend, del_extend);
 	/*
 	static uint8_t const transpose[16] __attribute__(( aligned(16) )) = {
 		0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15
@@ -597,10 +606,18 @@ struct dz_s *dz_init_intl(
 		}
 	#endif
 
-	__m128i const giv = _mm_set1_epi16(gi);
-	__m128i const gev = _mm_set1_epi16(ge);
-	_mm_store_si128((__m128i *)self->giv, giv);
-	_mm_store_si128((__m128i *)self->gev, gev);
+	/* insertion penalties */
+	__m128i const iiv = _mm_set1_epi16(ins_open);
+	__m128i const iev = _mm_set1_epi16(ins_extend);
+	_mm_store_si128((__m128i *)self->iiv, iiv);
+	_mm_store_si128((__m128i *)self->iev, iev);
+
+	/* deletion penalties */
+	__m128i const div = _mm_set1_epi16(del_open);
+	__m128i const dev = _mm_set1_epi16(del_extend);
+	_mm_store_si128((__m128i *)self->div, div);
+	_mm_store_si128((__m128i *)self->dev, dev);
+
 	self->xt = gi + ge * max_gap_len;			/* X-drop threshold */
 	self->bonus = full_length_bonus;
 	self->max_gap_len = max_gap_len;			/* save raw value */
@@ -619,14 +636,14 @@ struct dz_s *dz_init_intl(
 
 	/* fill the root (the leftmost) column; first init vectors */
 	__m128i s = _mm_setr_epi16(
-		dz_add_ofs(         0),
-		dz_add_ofs(  -(gi+ge)),
-		dz_add_ofs(-(gi+2*ge)),
-		dz_add_ofs(-(gi+3*ge)),
-		dz_add_ofs(-(gi+4*ge)),
-		dz_add_ofs(-(gi+5*ge)),
-		dz_add_ofs(-(gi+6*ge)),
-		dz_add_ofs(-(gi+7*ge))
+		dz_add_ofs(0),
+		dz_add_ofs(-(ins_open +     ins_extend)),
+		dz_add_ofs(-(ins_open + 2 * ins_extend)),
+		dz_add_ofs(-(ins_open + 3 * ins_extend)),
+		dz_add_ofs(-(ins_open + 4 * ins_extend)),
+		dz_add_ofs(-(ins_open + 5 * ins_extend)),
+		dz_add_ofs(-(ins_open + 6 * ins_extend)),
+		dz_add_ofs(-(ins_open + 7 * ins_extend))
 	);
 	__m128i const e = _mm_set1_epi16(dz_add_ofs(DZ_CELL_MIN));
 	__m128i const xtv = _mm_set1_epi16(dz_add_ofs(-self->xt));
@@ -639,17 +656,17 @@ struct dz_s *dz_init_intl(
 		if(p == 0) {
 			/* reset s vector */
 			s = _mm_setr_epi16(
-				dz_add_ofs(       -gi),
-				dz_add_ofs(  -(gi+ge)),
-				dz_add_ofs(-(gi+2*ge)),
-				dz_add_ofs(-(gi+3*ge)),
-				dz_add_ofs(-(gi+4*ge)),
-				dz_add_ofs(-(gi+5*ge)),
-				dz_add_ofs(-(gi+6*ge)),
-				dz_add_ofs(-(gi+7*ge))
+				dz_add_ofs(-ins_open),
+				dz_add_ofs(-(ins_open +     ins_extend)),
+				dz_add_ofs(-(ins_open + 2 * ins_extend)),
+				dz_add_ofs(-(ins_open + 3 * ins_extend)),
+				dz_add_ofs(-(ins_open + 4 * ins_extend)),
+				dz_add_ofs(-(ins_open + 5 * ins_extend)),
+				dz_add_ofs(-(ins_open + 6 * ins_extend)),
+				dz_add_ofs(-(ins_open + 7 * ins_extend))
 			);
 		}
-		s = _mm_subs_epu16(s, _mm_slli_epi16(gev, 3));		/* gev[i] * 8 */
+		s = _mm_subs_epu16(s, _mm_slli_epi16(iev, 3));		/* iev[i] * 8 */
 	}
 
 	/* done; create and return a forefront object */
@@ -668,8 +685,21 @@ struct dz_s *dz_init(
 	uint64_t max_gap_len,
 	uint16_t full_length_bonus)
 {
-	return(dz_init_intl(score_matrix, gap_open, gap_extend, max_gap_len, full_length_bonus));
+	return(dz_init_intl(score_matrix, gap_open, gap_extend, gap_open, gap_extend, max_gap_len, full_length_bonus));
 }
+static __dz_vectorize
+struct dz_s *dz_initx(
+	int8_t const *score_matrix,
+	uint16_t ins_open,
+	uint16_t ins_extend,
+	uint16_t del_open,
+	uint16_t del_extend,
+	uint64_t max_gap_len,
+	uint16_t full_length_bonus)
+{
+	return(dz_init_intl(score_matrix, ins_open, ins_extend, del_open, del_extend, max_gap_len, full_length_bonus));
+}
+
 #else
 static __dz_vectorize
 struct dz_s *dz_init(
@@ -678,8 +708,20 @@ struct dz_s *dz_init(
 	uint16_t gap_extend,
 	uint64_t max_gap_len)
 {
-	return(dz_init_intl(score_matrix, gap_open, gap_extend, max_gap_len, 0));
+	return(dz_init_intl(score_matrix, gap_open, gap_extend, gap_open, gap_extend, max_gap_len, 0));
 }
+static __dz_vectorize
+struct dz_s *dz_initx(
+	int8_t const *score_matrix,
+	uint16_t ins_open,
+	uint16_t ins_extend,
+	uint16_t del_open,
+	uint16_t del_extend,
+	uint64_t max_gap_len)
+{
+	return(dz_init_intl(score_matrix, ins_open, ins_extend, del_open, del_extend, max_gap_len, 0));
+}
+
 #endif
 
 static __dz_vectorize
@@ -1106,7 +1148,7 @@ unittest() {
 		do { \
 			if(_test_xdrop(s, xtv)) { break; } \
 			_store_vector(&cdp[w.r.epos]); w.r.epos++; \
-			f = _mm_subs_epu16(f, gev8); s = _mm_subs_epu16(s, gev8); \
+			f = _mm_subs_epu16(f, iev8); s = _mm_subs_epu16(s, iev8); \
 		} while(w.r.epos < query->blen); \
 	} \
 dz_pp_cat(_forefront_, __LINE__):; \
@@ -1151,12 +1193,20 @@ struct dz_forefront_s const *dz_extend_intl(
 		_mm_store_si128((__m128i *)conv, _mm_load_si128((__m128i const *)&conv_fr[rlen > 0 ? 0 : 16]));
 	#endif
 
-	__m128i const minv = _mm_set1_epi16(dz_add_ofs(DZ_CELL_MIN));
-	__m128i const giv = _mm_load_si128((__m128i const *)self->giv);
-	__m128i const gev1 = _mm_load_si128((__m128i const *)self->gev);
-	__m128i const gev2 = _mm_add_epi16(gev1, gev1);
-	__m128i const gev4 = _mm_slli_epi16(gev1, 2);
-	__m128i const gev8 = _mm_slli_epi16(gev1, 3);
+	/* constant */
+	__m128i const minv = _mm_set1_epi16(DZ_CELL_MIN);
+
+	/* insertion penalties */
+	__m128i const iiv = _mm_load_si128((__m128i const *)self->iiv);
+	__m128i const iev1 = _mm_load_si128((__m128i const *)self->iev);
+	__m128i const iev2 = _mm_add_epi16(iev1, iev1);
+	__m128i const iev4 = _mm_slli_epi16(iev1, 2);
+	__m128i const iev8 = _mm_slli_epi16(iev1, 3);
+
+	/* deletion penalties */
+	__m128i const div = _mm_load_si128((__m128i const *)self->div);
+	__m128i const dev = _mm_load_si128((__m128i const *)self->dev);
+
 
 	struct dz_forefront_s w = { { UINT32_MAX, 0 }, 0, 0, 0, 0, 0, 0, NULL, NULL };	/* uint32_t spos, epos, max, inc; struct dz_query_s const *query; struct dz_cap_s const *cap; */ \
 	w.rlen = rlen;
@@ -1524,7 +1574,7 @@ struct dz_alignment_s *dz_trace(
 	#define _ins(_idx) { \
 		if(_vector_idx(idx - 1) >= cap->r.spos && score == (uint16_t)_s(f, cap, idx)) { \
 			_debug(I); \
-			while(_vector_idx(idx - 1) >= cap->r.spos && score != (uint16_t)(_s(s, cap, idx - 1) - self->gev[0] - self->giv[0])) { \
+			while(_vector_idx(idx - 1) >= cap->r.spos && score != (uint16_t)(_s(s, cap, idx - 1) - self->iev[0] - self->iiv[0])) { \
 				*--path = (DZ_CIGAR_OP>>16) & 0xff; cnt[2]++; score = _s(f, cap, idx - 1); idx--; _debug(I); \
 			} \
 			*--path = (DZ_CIGAR_OP>>16) & 0xff; cnt[2]++; score = _s(s, cap, idx - 1); idx--; \
@@ -1534,7 +1584,7 @@ struct dz_alignment_s *dz_trace(
 	#define _del(_idx) { \
 		if(dz_inside(pcap->r.spos, _vector_idx(idx), pcap->r.epos) && score == (uint16_t)_s(e, cap, idx)) { \
 			_debug(D); \
-			while(dz_inside(pcap->r.spos, _vector_idx(idx), pcap->r.epos) && score == (uint16_t)(_s(e, pcap, idx) - self->gev[0])) { \
+			while(dz_inside(pcap->r.spos, _vector_idx(idx), pcap->r.epos) && score == (uint16_t)(_s(e, pcap, idx) - self->iev[0])) { \
 				*--path = (DZ_CIGAR_OP>>24) & 0xff; cnt[3]++; score = _s(e, pcap, idx); _load_prev_cap(e, score, _idx); _debug(D); \
 			} \
 			*--path = (DZ_CIGAR_OP>>24) & 0xff; cnt[3]++; score = _s(s, pcap, idx); rch = _load_prev_cap(s, score, _idx); \
