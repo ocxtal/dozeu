@@ -12,7 +12,9 @@
  * latest version is found at https://github.com/ocxtal/unittest.h.
  * see README.md for the details.
  */
-#pragma once	/* instead of include guard */
+// #pragma once	/* instead of include guard */
+#ifndef UNITTEST_H_INCLUDED
+#define UNITTEST_H_INCLUDED
 
 #ifndef UNITTEST
 #define UNITTEST 				1
@@ -1563,6 +1565,8 @@ int main(int argc, char *argv[])
 	return(unittest_main(argc, argv));
 }
 #endif
+
+#endif /* UNITTEST_H_INCLUDED */
 
 /**
  * end of unittest.h
