@@ -169,6 +169,7 @@ unittest() { debug("hello"); }
 
 /* query; preconverted query sequence; blen = roundup(qlen, L) / L; array must have 16-byte-length margin at the tail */
 struct dz_query_s { uint64_t blen; char const *q; int16_t bonus[2 * sizeof(__m128i) / sizeof(int16_t)]; uint8_t arr[]; };
+typedef struct dz_query_s dz_query_t;
 dz_static_assert(sizeof(struct dz_query_s) % sizeof(__m128i) == 0);
 
 /* node (reference) */
@@ -195,6 +196,7 @@ struct dz_forefront_s {
 	struct dz_query_s const *query;
 	struct dz_cap_s const *mcap;
 };
+typedef struct dz_forefront_s dz_forefront_t;
 dz_static_assert(sizeof(struct dz_swgv_s) % sizeof(__m128i) == 0);
 dz_static_assert(sizeof(struct dz_cap_s) % sizeof(__m128i) == 0);
 dz_static_assert(sizeof(struct dz_forefront_s) % sizeof(__m128i) == 0);
@@ -214,6 +216,8 @@ struct dz_path_span_s {
 	uint32_t id;
 	uint32_t offset;
 };
+typedef struct dz_path_span_s dz_path_span_t;
+
 struct dz_alignment_s {
 	struct dz_path_span_s const *span;
 	uint8_t const *path;
@@ -221,6 +225,7 @@ struct dz_alignment_s {
 	int32_t rrem, score;
 	uint32_t mismatch_count, match_count, ins_count, del_count;
 };
+typedef struct dz_alignment_s dz_alignment_t;
 
 /* context (constants and working buffers) */
 struct dz_mem_block_s { struct dz_mem_block_s *next; size_t size; };
@@ -236,6 +241,7 @@ struct dz_s {
 	struct dz_forefront_s const *root;
 	int8_t protein_matrix[];			/* allocated at the tail if not DNA matrix */
 };
+typedef struct dz_s dz_t;
 dz_static_assert(sizeof(struct dz_s) % sizeof(__m128i) == 0);
 #define dz_mem(_self)				( (struct dz_mem_s *)(_self) - 1 )
 
