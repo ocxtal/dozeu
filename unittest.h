@@ -38,10 +38,15 @@
 #include <getopt.h>
 #include <inttypes.h>
 #include <stdarg.h>
+#include <stddef.h>				/* offsetof */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 #ifndef UNITTEST_UNIQUE_ID
 #define UNITTEST_UNIQUE_ID		0
@@ -68,10 +73,15 @@
 #define UT_DEFAULT_COLOR	"\x1b[39m"
 #define ut_color(c, x)		c x UT_DEFAULT_COLOR
 
+/* static assertion macros */
+#define ut_sa_cat_intl(x, y)	x##y
+#define ut_sa_cat(x, y)			ut_sa_cat_intl(x, y)
+#define ut_static_assert(expr)	typedef char ut_sa_cat(_ut_st, __LINE__)[(expr) ? 1 : -1]
+
 /**
  * basic vectors (utkv_*)
  */
-#define utkvec_t(type)    struct { uint64_t n, m; type *a; }
+#define utkvec_t(type)    struct { size_t n, m; type *a; }
 #define utkv_init(v)      ( (v).n = 0, (v).m = UNITTEST_KV_INIT, (v).a = (__typeof__((v).a))calloc((v).m, sizeof(*(v).a)) )
 #define utkv_destroy(v)   { free((v).a); (v).a = NULL; }
 // #define utkv_A(v, i)      ( (v).a[(i)] )
@@ -126,9 +136,9 @@ int main(int argc, char *argv[]);
  * @struct ut_result_s
  */
 struct ut_result_s {
-	int64_t cnt;
-	int64_t succ;
-	int64_t fail;
+	size_t cnt;
+	size_t succ;
+	size_t fail;
 };
 
 struct ut_global_config_s;
@@ -137,22 +147,11 @@ struct ut_s;
 struct ut_result_s;
 struct ut_printer_s {
 	/* printers */
-	void (*global_header)(
-		struct ut_global_config_s const *gconf);
-	void (*global_footer)(
-		struct ut_global_config_s const *gconf);
-	void (*header)(
-		struct ut_global_config_s const *gconf,
-		struct ut_group_config_s const *config);
-	void (*footer)(
-		struct ut_global_config_s const *gconf,
-		struct ut_group_config_s const *config);
-
 	void (*failed)(
-		struct ut_global_config_s const *gconf,
 		struct ut_s const *info,
+		struct ut_global_config_s const *gconf,
 		struct ut_group_config_s const *config,
-		int64_t line,
+		size_t line,
 		char const *func,
 		char const *expr,
 		char const *fmt,
@@ -162,7 +161,7 @@ struct ut_printer_s {
 		struct ut_global_config_s const *gconf,
 		struct ut_group_config_s const *config,
 		struct ut_result_s const *result,
-		int64_t file_cnt);
+		size_t file_cnt);
 };
 
 /**
@@ -171,6 +170,7 @@ struct ut_printer_s {
 struct ut_global_config_s {
 	FILE *fp;
 	struct ut_printer_s printer;
+	size_t threads;
 };
 
 /**
@@ -181,16 +181,15 @@ struct ut_global_config_s {
 struct ut_group_config_s {
 	/* internal use */
 	char const *file;
-	int64_t unique_id;
-	uint64_t line;
-	int64_t exec;
+	size_t unique_id;
+	size_t line;
+	size_t exec;
+
+	size_t _pad[4];
 
 	/* dependency resolution */
 	char const *name;
 	char const *depends_on[16];
-
-	/* unused */
-	void *unused;
 
 	/* environment setup and cleanup */
 	void *(*init)(void *params);
@@ -206,18 +205,21 @@ struct ut_group_config_s {
 struct ut_s {
 	/* for internal use */
 	char const *file;
-	int64_t unique_id;
-	uint64_t line;
-	int64_t exec;
+	size_t unique_id;
+	size_t line;
+	size_t exec;
 
 	/* per-function config */
 	void (*fn)(
 		void *ctx,
 		void *gctx,
+		struct ut_s *info,
 		struct ut_global_config_s const *ut_gconf,
-		struct ut_s const *info,
-		struct ut_group_config_s const *config,
-		struct ut_result_s *result);
+		struct ut_group_config_s const *config);
+
+	/* internal use (cont'd) */
+	size_t index;
+	size_t succ, fail;		/* result: 1 when succeeded, 2 when failed */
 
 	/* dependency resolution */
 	char const *name;
@@ -228,6 +230,18 @@ struct ut_s {
 	void (*clean)(void *context);
 	void *params;
 };
+
+/* the two structs must be castable */
+ut_static_assert(offsetof(struct ut_group_config_s, file) == offsetof(struct ut_s, file));
+ut_static_assert(offsetof(struct ut_group_config_s, unique_id) == offsetof(struct ut_s, unique_id));
+ut_static_assert(offsetof(struct ut_group_config_s, line) == offsetof(struct ut_s, line));
+ut_static_assert(offsetof(struct ut_group_config_s, exec) == offsetof(struct ut_s, exec));
+ut_static_assert(offsetof(struct ut_group_config_s, name) == offsetof(struct ut_s, name));
+ut_static_assert(offsetof(struct ut_group_config_s, depends_on) == offsetof(struct ut_s, depends_on));
+ut_static_assert(offsetof(struct ut_group_config_s, init) == offsetof(struct ut_s, init));
+ut_static_assert(offsetof(struct ut_group_config_s, clean) == offsetof(struct ut_s, clean));
+ut_static_assert(offsetof(struct ut_group_config_s, params) == offsetof(struct ut_s, params));
+
 
 /**
  * @macro ut_unused
@@ -255,20 +269,19 @@ struct ut_s {
  * @brief instanciate a unittest object
  */
 #define UNITTEST_ARG_DECL \
-	void *ctx, \
-	void *gctx, \
-	struct ut_global_config_s const *ut_gconf, \
-	struct ut_s const *ut_info, \
-	struct ut_group_config_s const *ut_config, \
-	struct ut_result_s *ut_result
-#define UNITTEST_ARG_LIST 	ctx, gctx, ut_gconf, ut_info, ut_config, ut_result
+	void *ctx __attribute__(( unused )), \
+	void *gctx __attribute__(( unused )), \
+	struct ut_s *ut_info __attribute__(( unused )), \
+	struct ut_global_config_s const *ut_gconf __attribute__(( unused )), \
+	struct ut_group_config_s const *ut_config __attribute__(( unused ))
+#define UNITTEST_ARG_LIST 	ctx, gctx, ut_info, ut_gconf, ut_config
 #if UNITTEST != 0
 #define unittest(...) \
 	static void ut_build_name(ut_body_, UNITTEST_UNIQUE_ID, __LINE__)(UNITTEST_ARG_DECL); \
 	static struct ut_s const ut_build_name(ut_info_, UNITTEST_UNIQUE_ID, __LINE__) = { \
 		/* file, unique_id, line, exec, fn, name, depends_on */ \
-		__FILE__, UNITTEST_UNIQUE_ID, __LINE__, 0, ut_build_name(ut_body_, UNITTEST_UNIQUE_ID, __LINE__), \
-		__VA_ARGS__ \
+		__FILE__, UNITTEST_UNIQUE_ID, __LINE__, 1, ut_build_name(ut_body_, UNITTEST_UNIQUE_ID, __LINE__), \
+		0, 0, 0, __VA_ARGS__ \
 	}; \
 	struct ut_s ut_build_name(ut_get_info_, UNITTEST_UNIQUE_ID, __LINE__)(void) \
 	{ \
@@ -292,8 +305,9 @@ struct ut_s {
 #if UNITTEST != 0
 #define unittest_config(...) \
 	static struct ut_group_config_s const ut_build_name(ut_config_, UNITTEST_UNIQUE_ID, __LINE__) = { \
-		/* file, unique_id, line, exec, name, depends_on */ \
-		__FILE__, UNITTEST_UNIQUE_ID, __LINE__, 0, \
+		.file = __FILE__, \
+		.line = __LINE__, \
+		.unique_id = UNITTEST_UNIQUE_ID, \
 		__VA_ARGS__ \
 	}; \
 	struct ut_group_config_s ut_build_name(ut_get_config_, UNITTEST_UNIQUE_ID, 0)(void) \
@@ -310,10 +324,10 @@ struct ut_s {
 /* assertion failed message printers */
 static
 void ut_print_assertion_failed(
-	struct ut_global_config_s const *gconf,
 	struct ut_s const *info,
+	struct ut_global_config_s const *gconf,
 	struct ut_group_config_s const *config,
-	int64_t line,
+	size_t line,
 	char const *func,
 	char const *expr,
 	char const *fmt,
@@ -325,7 +339,7 @@ void ut_print_assertion_failed(
 	va_start(l, fmt);
 
 	fprintf(gconf->fp,
-		ut_color(UT_YELLOW, "assertion failed") ": [%s] %s:" ut_color(UT_BLUE, "%" PRId64 "") " (%s) `" ut_color(UT_MAGENTA, "%s") "'",
+		ut_color(UT_YELLOW, "assertion failed") ": [%s] %s:" ut_color(UT_BLUE, "%zu") " (%s) `" ut_color(UT_MAGENTA, "%s") "'",
 		ut_null_replace(config->name, "no name"),
 		ut_null_replace(info->file, "(unknown filename)"),
 		line,
@@ -341,35 +355,11 @@ void ut_print_assertion_failed(
 }
 
 static
-void ut_print_global_header_json(
-	struct ut_global_config_s const *gconf)
-{
-	fprintf(gconf->fp, "\"fails\": [\n");
-	return;
-}
-
-static
-void ut_print_header_json(
-	struct ut_global_config_s const *gconf,
-	struct ut_group_config_s const *config)
-{
-	fprintf(gconf->fp, "\t{\n");
-	if(config->name != NULL) {
-		fprintf(gconf->fp, "\t\t\"group\": \"%s\",\n", config->name);
-	}
-	if(config->file != NULL) {
-		fprintf(gconf->fp, "\t\t\"filename\": \"%s\",\n", config->file);
-	}
-	fprintf(gconf->fp, "\t\t\"fails\": [\n");
-	return;
-}
-
-static
 void ut_print_assertion_failed_json(
-	struct ut_global_config_s const *gconf,
 	struct ut_s const *info,
+	struct ut_global_config_s const *gconf,
 	struct ut_group_config_s const *config,
-	int64_t line,
+	size_t line,
 	char const *func,
 	char const *expr,
 	char const *fmt,
@@ -381,39 +371,26 @@ void ut_print_assertion_failed_json(
 	va_list l;
 	va_start(l, fmt);
 
-	fprintf(gconf->fp, "\t\t{\n");
-	fprintf(gconf->fp, "\t\t\t\"line\": %" PRId64 ",\n", line);
+	fprintf(gconf->fp, "{ \"tag\": \"fail\", ");
+	if(config->name != NULL) {
+		fprintf(gconf->fp, "\"group\": \"%s\", ", config->name);
+	}
+	if(config->file != NULL) {
+		fprintf(gconf->fp, "\"filename\": \"%s\", ", config->file);
+	}
+
+	fprintf(gconf->fp, "\"line\": %zu, ", line);
 	if(info->name != NULL) {
-		fprintf(gconf->fp, "\t\t\t\"name\": \"%s\",\n", info->name);
+		fprintf(gconf->fp, "\"name\": \"%s\", ", info->name);
 	}
-	fprintf(gconf->fp, "\t\t\t\"expr\": \"%s\"", expr);
+	fprintf(gconf->fp, "\"expr\": \"%s\", ", expr);
 	if(strlen(fmt) != 0) {
-		fprintf(gconf->fp, ",\n\t\t\t\"debugprint\": \"");
-		vfprintf(gconf->fp, fmt, l);
-		fprintf(gconf->fp, "\",\n");
+		fprintf(gconf->fp, "\"debugprint\": \"");
+		vfprintf(gconf->fp, fmt, l);			/* FIXME: escape */
+		fprintf(gconf->fp, "\", ");
 	}
-	fprintf(gconf->fp, "\t\t},\n");
+	fprintf(gconf->fp, "},\n");
 	va_end(l);
-	return;
-}
-
-static
-void ut_print_footer_json(
-	struct ut_global_config_s const *gconf,
-	struct ut_group_config_s const *config)
-{
-	ut_unused(config);
-
-	fprintf(gconf->fp, "\t\t],\n");
-	fprintf(gconf->fp, "\t},\n");
-	return;
-}
-
-static
-void ut_print_global_footer_json(
-	struct ut_global_config_s const *gconf)
-{
-	fprintf(gconf->fp, "],\n");
 	return;
 }
 
@@ -423,17 +400,16 @@ void ut_print_results(
 	struct ut_global_config_s const *gconf,
 	struct ut_group_config_s const *config,
 	struct ut_result_s const *result,
-	int64_t file_cnt)
+	size_t file_cnt)
 {
-	int64_t cnt = 0;
-	int64_t succ = 0;
-	int64_t fail = 0;
+	size_t cnt = 0;
+	size_t succ = 0;
+	size_t fail = 0;
 
-	for(int64_t i = 0, j = 0; i < file_cnt; i++) {
-
+	for(size_t i = 0, j = 0; i < file_cnt; i++) {
 		if(config[i].exec == 0) { continue; }
 
-		fprintf(gconf->fp, "%sGroup %s: %" PRId64 " succeeded, %" PRId64 " failed in total %" PRId64 " assertions in %" PRId64 " tests.%s\n",
+		fprintf(gconf->fp, "%sGroup %s: %zu succeeded, %zu failed in total %zu assertions in %zu tests.%s\n",
 			(result[j].fail == 0) ? UT_GREEN : UT_RED,
 			ut_null_replace(config[i].name, "(no name)"),
 			result[j].succ,
@@ -448,7 +424,7 @@ void ut_print_results(
 		j++;
 	}
 
-	fprintf(gconf->fp, "%sSummary: %" PRId64 " succeeded, %" PRId64 " failed in total %" PRId64 " assertions in %" PRId64 " tests.%s\n",
+	fprintf(gconf->fp, "%sSummary: %zu succeeded, %zu failed in total %zu assertions in %zu tests.%s\n",
 		(fail == 0) ? UT_GREEN : UT_RED,
 		succ, fail, succ + fail, cnt,
 		UT_DEFAULT_COLOR);
@@ -460,66 +436,54 @@ void ut_print_results_json(
 	struct ut_global_config_s const *gconf,
 	struct ut_group_config_s const *config,
 	struct ut_result_s const *result,
-	int64_t file_cnt)
+	size_t file_cnt)
 {
-	int64_t cnt = 0;
-	int64_t succ = 0;
-	int64_t fail = 0;
+	size_t cnt = 0;
+	size_t succ = 0;
+	size_t fail = 0;
 
-	fprintf(gconf->fp, "\"results\": [\n");
+	fprintf(gconf->fp, "{ \"tag\": \"results\", [ ");
 
-	for(int64_t i = 0, j = 0; i < file_cnt; i++) {
-
+	for(size_t i = 0, j = 0; i < file_cnt; i++) {
 		if(config[i].exec == 0) { continue; }
-
-		fprintf(gconf->fp, "\t{\n");
-		if(config[i].name != NULL) {
-			fprintf(gconf->fp, "\t\t\"group\": \"%s\",\n", config[i].name);
+		if(config->name != NULL) {
+			fprintf(gconf->fp, "{ \"group\": \"%s\", ", config->name);
 		}
-		if(config[i].file != NULL) {
-			fprintf(gconf->fp, "\t\t\"filename\": \"%s\",\n", config[i].file);
+		if(config->file != NULL) {
+			fprintf(gconf->fp, "\"filename\": \"%s\", ", config->file);
 		}
-		fprintf(gconf->fp, "\t\t\"succeeded\": %" PRId64 ",\n", result[j].succ);
-		fprintf(gconf->fp, "\t\t\"failed\": %" PRId64 ",\n", result[j].fail);
-		fprintf(gconf->fp, "\t\t\"assertioncount\": %" PRId64 ",\n", result[j].succ + result[j].fail);
-		fprintf(gconf->fp, "\t\t\"testcount\": %" PRId64 ",\n", result[j].cnt);
-		fprintf(gconf->fp, "\t},\n");
+		fprintf(gconf->fp, "\"succeeded\": %zu, ", result[j].succ);
+		fprintf(gconf->fp, "\"failed\": %zu, ", result[j].fail);
+		fprintf(gconf->fp, "\"assertioncount\": %zu, ", result[j].succ + result[j].fail);
+		fprintf(gconf->fp, "\"testcount\": %zu, ", result[j].cnt);
+		fprintf(gconf->fp, "}, ");
 		
 		cnt += result[j].cnt;
 		succ += result[j].succ;
 		fail += result[j].fail;
 		j++;
 	}
+	fprintf(gconf->fp, "] },\n");
 
-	fprintf(gconf->fp, "],\n");
 
-
-	fprintf(gconf->fp, "\"summary\": {\n");
-	fprintf(gconf->fp, "\t\"succeeded\": %" PRId64 ",\n", succ);
-	fprintf(gconf->fp, "\t\"failed\": %" PRId64 ",\n", fail);
-	fprintf(gconf->fp, "\t\"assertioncount\": %" PRId64 ",\n", succ + fail);
-	fprintf(gconf->fp, "\t\"testcount\": %" PRId64 ",\n", cnt);
-	fprintf(gconf->fp, "}\n");
+	fprintf(gconf->fp, "{ \"tag\": \"summary\", ");
+	fprintf(gconf->fp, "\"succeeded\": %zu, ", succ);
+	fprintf(gconf->fp, "\"failed\": %zu, ", fail);
+	fprintf(gconf->fp, "\"assertioncount\": %zu, ", succ + fail);
+	fprintf(gconf->fp, "\"testcount\": %zu, ", cnt);
+	fprintf(gconf->fp, "},\n");
 
 	return;
 }
 
 static
 struct ut_printer_s ut_default_printer = {
-	.global_header = NULL,
-	.global_footer = NULL,
-	.header = NULL,
-	.footer = NULL,
 	.failed = ut_print_assertion_failed,
 	.result = ut_print_results
 };
 
 static
 struct ut_printer_s ut_json_printer = {
-	.global_header = ut_print_global_header_json,
-	.global_footer = ut_print_global_footer_json,
-	.header = ut_print_header_json,
-	.footer = ut_print_footer_json,
 	.failed = ut_print_assertion_failed_json,
 	.result = ut_print_results_json
 };
@@ -528,26 +492,26 @@ struct ut_printer_s ut_json_printer = {
  * memory dump macro
  */
 #define ut_dump(ptr, len) ({ \
-	uint64_t _size = (((len) + 15) / 16 + 1) * \
+	size_t _size = (((len) + 15) / 16 + 1) * \
 		(strlen("0x0123456789abcdef:") + 16 * strlen(" 00a") + strlen("  \n+ margin")) \
 		+ strlen(#ptr) + strlen("\n`' len: 100000000"); \
 	uint8_t *_ptr = (uint8_t *)(ptr); \
 	char *_str = alloca(_size); \
 	char *_s = _str; \
 	/* make header */ \
-	_s += sprintf(_s, "\n`%s' len: %" PRIu64 "\n", #ptr, (uint64_t)len); \
+	_s += sprintf(_s, "\n`%s' len: %zu\n", #ptr, (size_t)len); \
 	_s += sprintf(_s, "                   "); \
-	for(uint64_t i = 0; i < 16; i++) { \
+	for(size_t i = 0; i < 16; i++) { \
 		_s += sprintf(_s, " %02x", (uint8_t)i); \
 	} \
 	_s += sprintf(_s, "\n"); \
-	for(uint64_t i = 0; i < ((len) + 15) / 16; i++) { \
-		_s += sprintf(_s, "0x%016" PRIx64 ":", (uint64_t)_ptr); \
-		for(uint64_t j = 0; j < 16; j++) { \
+	for(size_t i = 0; i < ((len) + 15) / 16; i++) { \
+		_s += sprintf(_s, "0x%016zu:", (size_t)_ptr); \
+		for(size_t j = 0; j < 16; j++) { \
 			_s += sprintf(_s, " %02x", (uint8_t)_ptr[j]); \
 		} \
 		_s += sprintf(_s, "  "); \
-		for(uint64_t j = 0; j < 16; j++) { \
+		for(size_t j = 0; j < 16; j++) { \
 			_s += sprintf(_s, "%c", isprint(_ptr[j]) ? _ptr[j] : ' '); \
 		} \
 		_s += sprintf(_s, "\n"); \
@@ -564,15 +528,15 @@ struct ut_printer_s ut_json_printer = {
  */
 #define ut_assert(expr, ...) { \
 	if(expr) { \
-		ut_result->succ++; \
+		ut_info->succ++; \
 	} else { \
-		ut_result->fail++; \
+		ut_info->fail++; \
 		/* dump debug information */ \
-		ut_gconf->printer.failed(ut_gconf, ut_info, ut_config, __LINE__, __func__, #expr, "" __VA_ARGS__); \
+		ut_gconf->printer.failed(ut_info, ut_gconf, ut_config, __LINE__, __func__, #expr, "" __VA_ARGS__); \
 	} \
 }
 #ifndef assert
-#define assert			ut_assert
+// #define assert			ut_assert
 #endif
 
 /**
@@ -608,7 +572,7 @@ static inline
 char *ut_build_nm_cmd(
 	char const *filename)
 {
-	uint64_t const filename_len_limit = 1024;
+	size_t const filename_len_limit = 1024;
 	char const *cmd_base = "nm ";
 
 	/* check the length of the filename */
@@ -695,13 +659,13 @@ struct ut_nm_result_s *ut_parse_nm_output(
 		/* check the sanity of the line */
 		char const *sp = p;
 		while(*sp != '\r' && *sp != '\n' && *sp != '\0') { sp++; }
-		// printf("%p, %p, %" PRId64 "\n", p, sp, (int64_t)(sp - p));
-		if((int64_t)(sp - p) < 1) { break; }
+		// printf("%p, %p, %zu\n", p, sp, (size_t)(sp - p));
+		if((size_t)(sp - p) < 1) { break; }
 
 		/* if the first character of the line is space, pass the PTR state */
 		if(!isspace(*p)) {
 			char *np;
-			r.ptr = (void *)((uint64_t)strtoll(p, &np, 16));
+			r.ptr = (void *)((size_t)strtoll(p, &np, 16));
 
 			/* advance pointer */
 			p = np;
@@ -853,7 +817,7 @@ void ut_dump_test(
 {
 	struct ut_s const *t = test;
 	while(t->file != NULL) {
-		printf("%s, %" PRIu64 ", %" PRId64 ", %s, %s, %p, %p\n",
+		printf("%s, %zu, %zu, %s, %s, %p, %p\n",
 			t->file,
 			t->line,
 			t->unique_id,
@@ -872,7 +836,7 @@ void ut_dump_config(
 {
 	struct ut_group_config_s const *c = config;
 	while(c->file != NULL) {
-		printf("%s, %" PRId64 ", %s, %s, %p, %p\n",
+		printf("%s, %zu, %s, %s, %p, %p\n",
 			c->file,
 			c->unique_id,
 			c->name,
@@ -900,7 +864,7 @@ int ut_compare(
 
 	#define sat(a)	( ((a) > INT32_MAX) ? INT32_MAX : (((a) < INT32_MIN) ? INT32_MIN : (a)) )
 
-	if((comp_res = (a->unique_id - b->unique_id)) != 0) {
+	if((comp_res = (int64_t)(a->unique_id - b->unique_id)) != 0) {
 		return(sat(comp_res));
 	}
 
@@ -926,30 +890,30 @@ int ut_match(
 }
 
 static inline
-uint64_t ut_get_total_test_count(
+size_t ut_get_total_test_count(
 	struct ut_s const *test)
 {
-	uint64_t cnt = 0;
+	size_t cnt = 0;
 	struct ut_s const *t = test;
 	while(t->file != NULL) { t++; cnt++; }
 	return(cnt);
 }
 
 static inline
-uint64_t ut_get_total_config_count(
+size_t ut_get_total_config_count(
 	struct ut_group_config_s const *config)
 {
-	uint64_t cnt = 0;
+	size_t cnt = 0;
 	struct ut_group_config_s const *c = config;
 	while(c->file != NULL) { c++; cnt++; }
 	return(cnt);
 }
 
 static inline
-uint64_t ut_get_total_file_count(
+size_t ut_get_total_file_count(
 	struct ut_s const *sorted_test)
 {
-	uint64_t cnt = 1;
+	size_t cnt = 1;
 	struct ut_s const *t = sorted_test;
 
 	if(t++->file == NULL) {
@@ -981,16 +945,16 @@ void ut_sort(
 		sizeof(struct ut_group_config_s),
 		ut_compare);
 	// ut_dump_test(test);
-	// printf("%" PRId64 "\n", ut_get_total_file_count(test));
+	// printf("%zu\n", ut_get_total_file_count(test));
 	return;
 }
 
 static inline
-uint64_t *ut_build_file_index(
+size_t *ut_build_file_index(
 	struct ut_s const *sorted_test)
 {
-	uint64_t cnt = 1;
-	utkvec_t(uint64_t) idx;
+	size_t cnt = 1;
+	utkvec_t(size_t) idx;
 	struct ut_s const *t = sorted_test;
 
 	utkv_init(idx);
@@ -1024,12 +988,12 @@ struct ut_group_config_s *ut_compensate_config(
 	// ut_dump_test(sorted_test);
 	// ut_dump_config(sorted_config);
 
-	uint64_t *file_idx = ut_build_file_index(sorted_test);
+	size_t *file_idx = ut_build_file_index(sorted_test);
 	utkvec_t(struct ut_group_config_s) compd_config;
 	utkv_init(compd_config);
 
-	int64_t i = 0;
-	// printf("%" PRId64 "\n", file_idx[i]);
+	size_t i = 0;
+	// printf("%zu\n", file_idx[i]);
 	struct ut_s const *t = &sorted_test[file_idx[i]];
 	struct ut_group_config_s const *c = sorted_config;
 
@@ -1052,26 +1016,26 @@ struct ut_group_config_s *ut_compensate_config(
 static inline
 int ut_toposort_by_tag(
 	struct ut_s *sorted_test,
-	uint64_t test_cnt)
+	size_t test_cnt)
 {
 	/* init dag */
-	utkvec_t(utkvec_t(uint64_t)) dag;
+	utkvec_t(utkvec_t(size_t)) dag;
 	utkv_init(dag);
 	utkv_reserve(dag, test_cnt);
-	for(uint64_t i = 0; i < test_cnt; i++) {
+	for(size_t i = 0; i < test_cnt; i++) {
 		utkv_init(utkv_at(dag, i));
 	}
 
 	/* build dag */
-	for(uint64_t i = 0; i < test_cnt; i++) {
+	for(size_t i = 0; i < test_cnt; i++) {
 		/* enumerate depends_on */
 		char const *const *d = sorted_test[i].depends_on;
 		while(*d != NULL) {
 			/* enumerate tests */
-			for(uint64_t j = 0; j < test_cnt; j++) {
+			for(size_t j = 0; j < test_cnt; j++) {
 				if(i == j) { continue; }
 				if(ut_strcmp(sorted_test[j].name, *d) == 0) {
-					// printf("edge found from node %" PRId64 " to node %" PRId64 "\n", j, i);
+					// printf("edge found from node %zu to node %zu\n", j, i);
 					utkv_push(utkv_at(dag, i), j);
 				}
 			}
@@ -1082,24 +1046,24 @@ int ut_toposort_by_tag(
 	/* build mark */
 	utkvec_t(int8_t) mark;
 	utkv_init(mark);
-	for(uint64_t i = 0; i < test_cnt; i++) {
-		// printf("incoming edge count %" PRId64 " : %" PRId64 "\n", i, utkv_size(utkv_at(dag, i)));
+	for(size_t i = 0; i < test_cnt; i++) {
+		// printf("incoming edge count %zu : %zu\n", i, utkv_size(utkv_at(dag, i)));
 		utkv_push(mark, utkv_size(utkv_at(dag, i)));
 	}
 
 	/* sort */
 	utkvec_t(struct ut_s) res;
 	utkv_init(res);
-	for(uint64_t i = 0; i < test_cnt; i++) {
-		uint64_t node_id = (uint64_t)-1LL;
-		for(uint64_t j = 0; j < test_cnt; j++) {
+	for(size_t i = 0; i < test_cnt; i++) {
+		size_t node_id = (size_t)-1LL;
+		for(size_t j = 0; j < test_cnt; j++) {
 			/* check if the node has incoming edges or is already pushed */
 			if(utkv_at(mark, j) == 0) {
 				node_id = j; break;
 			}
 		}
 
-		if(node_id == (uint64_t)-1LL) {
+		if(node_id == (size_t)-1LL) {
 			fprintf(stderr,
 				ut_color(UT_RED, "ERROR") ": detected circular dependency in the tests in `" ut_color(UT_MAGENTA, "%s") "'.\n",
 				sorted_test[0].file);
@@ -1107,22 +1071,22 @@ int ut_toposort_by_tag(
 		}
 
 		/* the node has no incoming edge */
-		// printf("the node %" PRId64 " has no incoming edge\n", node_id);
+		// printf("the node %zu has no incoming edge\n", node_id);
 		utkv_push(res, sorted_test[node_id]);
 
 		/* mark pushed */
 		utkv_at(mark, node_id) = -1;
 
 		/* delete edges */
-		for(uint64_t j = 0; j < test_cnt; j++) {
+		for(size_t j = 0; j < test_cnt; j++) {
 			if(node_id == j) { continue; }
 
-			for(uint64_t k = 0; k < utkv_size(utkv_at(dag, j)); k++) {
+			for(size_t k = 0; k < utkv_size(utkv_at(dag, j)); k++) {
 				if(utkv_at(utkv_at(dag, j), k) == node_id) {
-					// printf("the node %" PRId64 " had edge from %" PRId64 "\n", j, node_id);
+					// printf("the node %zu had edge from %zu\n", j, node_id);
 					utkv_at(utkv_at(dag, j), k) = -1;
 					utkv_at(mark, j)--;
-					// printf("and then node %" PRId64 " has %d incoming edges\n", j, utkv_at(mark, j));
+					// printf("and then node %zu has %d incoming edges\n", j, utkv_at(mark, j));
 				}
 			}
 		}
@@ -1136,12 +1100,12 @@ int ut_toposort_by_tag(
 	}
 
 	/* write back */
-	for(uint64_t i = 0; i < test_cnt; i++) {
+	for(size_t i = 0; i < test_cnt; i++) {
 		sorted_test[i] = utkv_at(res, i);
 	}
 
 	/* cleanup */
-	for(uint64_t i = 0; i < test_cnt; i++) {
+	for(size_t i = 0; i < test_cnt; i++) {
 		utkv_destroy(utkv_at(dag, i));
 	}
 	utkv_destroy(dag);
@@ -1154,29 +1118,29 @@ int ut_toposort_by_tag(
 static inline
 int ut_toposort_by_group(
 	struct ut_s *sorted_test,
-	uint64_t test_cnt,
+	size_t test_cnt,
 	struct ut_group_config_s *sorted_config,
-	uint64_t *file_idx,
-	uint64_t file_cnt)
+	size_t *file_idx,
+	size_t file_cnt)
 {
 	/* init dag */
-	utkvec_t(utkvec_t(uint64_t)) dag;
+	utkvec_t(utkvec_t(size_t)) dag;
 	utkv_init(dag);
 	utkv_reserve(dag, file_cnt);
-	for(uint64_t i = 0; i < file_cnt; i++) {
+	for(size_t i = 0; i < file_cnt; i++) {
 		utkv_init(utkv_at(dag, i));
 	}
 
 	/* build dag */
-	for(uint64_t i = 0; i < file_cnt; i++) {
+	for(size_t i = 0; i < file_cnt; i++) {
 		/* enumerate depends_on */
 		char const *const *d = sorted_config[i].depends_on;
 		while(*d != NULL) {
 			/* enumerate tests */
-			for(uint64_t j = 0; j < file_cnt; j++) {
+			for(size_t j = 0; j < file_cnt; j++) {
 				if(i == j) { continue; }
 				if(ut_strcmp(sorted_config[j].name, *d) == 0) {
-					// printf("edge found from group %" PRId64 " to group %" PRId64 "\n", j, i);
+					// printf("edge found from group %zu to group %zu\n", j, i);
 					utkv_push(utkv_at(dag, i), j);
 				}
 			}
@@ -1187,8 +1151,8 @@ int ut_toposort_by_group(
 	/* build mark */
 	utkvec_t(int8_t) mark;
 	utkv_init(mark);
-	for(uint64_t i = 0; i < file_cnt; i++) {
-		// printf("incoming edge count %" PRId64 " : %" PRId64 "\n", i, utkv_size(utkv_at(dag, i)));
+	for(size_t i = 0; i < file_cnt; i++) {
+		// printf("incoming edge count %zu : %zu\n", i, utkv_size(utkv_at(dag, i)));
 		utkv_push(mark, utkv_size(utkv_at(dag, i)));
 	}
 
@@ -1197,28 +1161,28 @@ int ut_toposort_by_group(
 	utkvec_t(struct ut_group_config_s) config_buf;
 	utkv_init(test_buf);
 	utkv_init(config_buf);
-	// utkvec_t(uint64_t) res;
+	// utkvec_t(size_t) res;
 	// utkv_init(res);
-	for(uint64_t i = 0; i < file_cnt; i++) {
-		uint64_t file_id = (uint64_t)-1LL;
-		for(uint64_t j = 0; j < file_cnt; j++) {
+	for(size_t i = 0; i < file_cnt; i++) {
+		size_t file_id = (size_t)-1LL;
+		for(size_t j = 0; j < file_cnt; j++) {
 			/* check if the node has incoming edges or is already pushed */
 			if(utkv_at(mark, j) == 0) {
 				file_id = j; break;
 			}
 		}
 
-		if(file_id == (uint64_t)-1LL) {
+		if(file_id == (size_t)-1LL) {
 			fprintf(stderr, ut_color(UT_RED, "ERROR") ": detected circular dependency between groups.\n");
 			return(-1);
 		}
 
 		/* the node has no incoming edge */
-		// printf("the node %" PRId64 " has no incoming edge\n", file_id);
+		// printf("the node %zu has no incoming edge\n", file_id);
 		// utkv_push(res, file_id);
 
 		utkv_push(config_buf, sorted_config[file_id]);
-		for(uint64_t j = file_idx[file_id]; j < file_idx[file_id + 1]; j++) {
+		for(size_t j = file_idx[file_id]; j < file_idx[file_id + 1]; j++) {
 			utkv_push(test_buf, sorted_test[j]);
 		}
 
@@ -1226,15 +1190,15 @@ int ut_toposort_by_group(
 		utkv_at(mark, file_id) = -1;
 
 		/* delete edges */
-		for(uint64_t j = 0; j < file_cnt; j++) {
+		for(size_t j = 0; j < file_cnt; j++) {
 			if(file_id == j) { continue; }
 
-			for(uint64_t k = 0; k < utkv_size(utkv_at(dag, j)); k++) {
+			for(size_t k = 0; k < utkv_size(utkv_at(dag, j)); k++) {
 				if(utkv_at(utkv_at(dag, j), k) == file_id) {
-					// printf("the node %" PRId64 " had edge from %" PRId64 "\n", j, file_id);
+					// printf("the node %zu had edge from %zu\n", j, file_id);
 					utkv_at(utkv_at(dag, j), k) = -1;
 					utkv_at(mark, j)--;
-					// printf("and then node %" PRId64 " has %d incoming edges\n", j, utkv_at(mark, j));
+					// printf("and then node %zu has %d incoming edges\n", j, utkv_at(mark, j));
 				}
 			}
 		}
@@ -1246,15 +1210,15 @@ int ut_toposort_by_group(
 	}
 
 	/* write back */
-	for(uint64_t i = 0; i < test_cnt; i++) {
+	for(size_t i = 0; i < test_cnt; i++) {
 		sorted_test[i] = utkv_at(test_buf, i);
 	}
-	for(uint64_t i = 0; i < file_cnt; i++) {
+	for(size_t i = 0; i < file_cnt; i++) {
 		sorted_config[i] = utkv_at(config_buf, i);
 	}
 
 	/* cleanup */
-	for(uint64_t i = 0; i < file_cnt; i++) {
+	for(size_t i = 0; i < file_cnt; i++) {
 		utkv_destroy(utkv_at(dag, i));
 	}
 	utkv_destroy(dag);
@@ -1273,7 +1237,7 @@ static inline
 char *ut_build_short_option_string(struct option const *opts)
 {
 	char *str = NULL, *ps;
-	uint64_t len = 0;
+	size_t len = 0;
 	struct option const *po = NULL;
 
 	for(po = opts; po->name != NULL; po++) { len++; }
@@ -1295,7 +1259,7 @@ static inline
 int ut_modify_test_config_mark(
 	char const *arg,
 	void *_test,
-	int64_t cnt)
+	size_t cnt)
 {
 	struct ut_s *test = (struct ut_s *)_test;
 	char const *p = arg, *b = arg;
@@ -1310,9 +1274,11 @@ int ut_modify_test_config_mark(
 
 		/* linear search among tests */
 		int marked = 0;
-		for(int64_t i = 0; i < cnt; i++) {
+		for(size_t i = 0; i < cnt; i++) {
 			if(ut_strcmp(test[i].name, buf) == 0) {
-				test[i].exec = 1; marked = 1;
+				test[i].exec = 2; marked = 1;
+			} else {
+				test[i].exec = 0;
 			}
 		}
 		if(marked == 0) {
@@ -1331,10 +1297,10 @@ int ut_modify_test_config_mark(
 static inline
 int ut_modify_test_config_all(
 	void *_test,
-	int64_t cnt)
+	size_t cnt)
 {
 	struct ut_s *test = (struct ut_s *)_test;
-	for(int64_t i = 0; i < cnt; i++) {
+	for(size_t i = 0; i < cnt; i++) {
 		test[i].exec = 1;
 	}
 	return(0);
@@ -1351,11 +1317,12 @@ void ut_print_help(void)
 		"  unittest.h -- simple unittesting framework for C99\n"
 		"\n"
 		"  Options:\n"
-		"    -g, --group [STR,...]    specify group names\n"
-		"    -t, --test  [STR,...]    specify test names\n"
-		"    -s, --seed  [INT]        invoke libc::srand with the seed\n"
+		"    -g, --group   [STR,...]  specify group names\n"
+		"    -t, --test    [STR,...]  specify test names\n"
+		"    -s, --seed    [INT       invoke libc::srand with the seed\n"
 		"    -o, --stdout             redirect to stdout\n"
 		"    -j, --json               print result in json\n"
+		"    -n, --threads [INT]      number of threads\n"
 		"    -h, --help               show this message\n"
 		"\n"
 		"  this is an auto-generated message from unittest.h\n"
@@ -1376,9 +1343,9 @@ int ut_modify_test_config(
 	char *const argv[],
 	struct ut_global_config_s *params,
 	struct ut_s *sorted_test,
-	int64_t test_cnt,
+	size_t test_cnt,
 	struct ut_group_config_s *sorted_config,
-	int64_t file_cnt)
+	size_t file_cnt)
 {
 	static struct option const opts_long[] = {
 		{ "group", required_argument, NULL, 'g' },
@@ -1386,6 +1353,7 @@ int ut_modify_test_config(
 		{ "seed", required_argument, NULL, 's' },
 		{ "stdout", no_argument, NULL, 'o' },
 		{ "json", no_argument, NULL, 'j' },
+		{ "threads", required_argument, NULL, 'n' },
 		{ "help", no_argument, NULL, 'h' },
 		{ NULL, 0, NULL, 0 }
 	};
@@ -1400,6 +1368,7 @@ int ut_modify_test_config(
 			case 's': srand((unsigned int)atol(optarg)); break;
 			case 'j': params->printer = ut_json_printer; break;
 			case 'o': params->fp = stdout; break;
+			case 'n': params->threads = atoi(optarg); break;
 			case 'h': ut_print_help(); return(1);
 			default: break;
 		}
@@ -1419,6 +1388,68 @@ int ut_modify_test_config(
 
 	free(opts_short);
 	return(0);
+}
+
+/**
+ * @fn ut_propagate_config
+ */
+static inline
+void ut_propagate_config(
+	struct ut_s *test,
+	size_t test_cnt,
+	struct ut_group_config_s *compd_config,
+	size_t *sorted_file_idx,
+	size_t file_cnt)
+{
+	ut_unused(test_cnt);
+	ut_unused(compd_config);
+
+	/* set index */
+	for(size_t i = 0; i < file_cnt; i++) {
+		for(size_t j = sorted_file_idx[i]; j < sorted_file_idx[i + 1]; j++) {
+			test[j].index = i;
+			test[j].succ = 0;		/* clear counters */
+			test[j].fail = 0;
+		}
+	}
+	return;
+}
+
+/**
+ * @fn ut_run_test
+ */
+static
+void ut_run_test(
+	struct ut_s *test,
+	struct ut_global_config_s const *gconf,
+	struct ut_group_config_s const *compd_config)
+{
+	if(test->exec == 0) { return; }
+	size_t index = test->index;
+
+	/* initialize group context */
+	void *gctx = NULL;
+	if(compd_config[index].init != NULL && compd_config[index].clean != NULL) {
+		gctx = compd_config[index].init(compd_config[index].params);
+	}
+
+	/* initialize local context */
+	void *ctx = NULL;
+	if(test->init != NULL && test->clean != NULL) {
+		ctx = test->init(test->params);
+	}
+
+	/* run a test */
+	test->fn(ctx, gctx, test, gconf, &compd_config[index]);
+
+	/* cleanup contexts */
+	if(test->init != NULL && test->clean != NULL) {
+		test->clean(ctx);
+	}
+	if(compd_config[index].init != NULL && compd_config[index].clean != NULL) {
+		compd_config[index].clean(gctx);
+	}
+	return;
 }
 
 /**
@@ -1442,15 +1473,15 @@ int ut_main_impl(int argc, char *argv[])
 	ut_sort(test, config);
 	struct ut_group_config_s *compd_config = ut_compensate_config(test, config);
 
-	uint64_t test_cnt = ut_get_total_test_count(test);
-	uint64_t *file_idx = ut_build_file_index(test);
-	uint64_t file_cnt = ut_get_total_file_count(test);
+	size_t test_cnt = ut_get_total_test_count(test);
+	size_t *file_idx = ut_build_file_index(test);
+	size_t file_cnt = ut_get_total_file_count(test);
 
-	// printf("%" PRId64 "\n", file_cnt);
+	// printf("%zu\n", file_cnt);
 
 	/* topological sort by tag */
-	for(uint64_t i = 0; i < file_cnt; i++) {
-		// printf("toposort %" PRId64 ", %" PRId64 "\n", file_idx[i], file_idx[i + 1]);
+	for(size_t i = 0; i < file_cnt; i++) {
+		// printf("toposort %zu, %zu\n", file_idx[i], file_idx[i + 1]);
 		if(ut_toposort_by_tag(&test[file_idx[i]], file_idx[i + 1] - file_idx[i]) != 0) {
 			fprintf(stderr, ut_color(UT_RED, "ERROR") ": failed to order tests. check if the depends_on options are sane.\n");
 			return(1);
@@ -1466,7 +1497,7 @@ int ut_main_impl(int argc, char *argv[])
 	}
 
 	/* rebuild file idx */
-	uint64_t *sorted_file_idx = ut_build_file_index(test);
+	size_t *sorted_file_idx = ut_build_file_index(test);
 
 	/* init default params */
 	struct ut_global_config_s gconf = {
@@ -1479,68 +1510,31 @@ int ut_main_impl(int argc, char *argv[])
 		return 1;
 	}
 
-	/* print global header */
-	if(gconf.printer.global_header != NULL) {
-		gconf.printer.global_header(&gconf);
-	}
+	/* copy exec flag */
+	ut_propagate_config(test, test_cnt, compd_config, sorted_file_idx, file_cnt);
 
 	/* run tests */
-	utkvec_t(struct ut_result_s) res;
-	utkv_init(res);
-	for(uint64_t i = 0; i < file_cnt; i++) {
-		struct ut_result_s r = { 0 };
-
-		if(compd_config[i].exec == 0) { continue; }
-
-		if(gconf.printer.header != NULL) {
-			gconf.printer.header(&gconf, &compd_config[i]);
-		}
-
-		for(uint64_t j = sorted_file_idx[i]; j < sorted_file_idx[i + 1]; j++) {
-
-			if(test[j].exec == 0) { continue; }
-
-			r.cnt++;
-
-			/* initialize group context */
-			void *gctx = NULL;
-			if(compd_config[i].init != NULL && compd_config[i].clean != NULL) {
-				gctx = compd_config[i].init(compd_config[i].params);
-			}
-
-			/* initialize local context */
-			void *ctx = NULL;
-			if(test[j].init != NULL && test[j].clean != NULL) {
-				ctx = test[j].init(test[j].params);
-			}
-
-			/* run a test */
-			test[j].fn(ctx, gctx, &gconf, &test[j], &compd_config[i], &r);
-
-			/* cleanup contexts */
-			if(test[j].init != NULL && test[j].clean != NULL) {
-				test[j].clean(ctx);
-			}
-			if(compd_config[i].init != NULL && compd_config[i].clean != NULL) {
-				compd_config[i].clean(gctx);
-			}
-		}
-		utkv_push(res, r);
-
-		if(gconf.printer.footer != NULL) {
-			gconf.printer.footer(&gconf, &compd_config[i]);
-		}
+	#ifdef _OPENMP
+	omp_set_num_threads(gconf.threads);
+	#pragma omp parallel for
+	#endif
+	for(size_t i = 0; i < test_cnt; i++) {
+		ut_run_test(&test[i], &gconf, compd_config);
 	}
 
-	/* print global footer */
-	if(gconf.printer.global_footer != NULL) {
-		gconf.printer.global_footer(&gconf);
+	/* collect results */
+	struct ut_result_s *res = calloc(sizeof(struct ut_result_s), file_cnt);
+	for(size_t i = 0; i < test_cnt; i++) {
+		size_t index = test[i].index;
+		res[index].cnt++;
+		res[index].succ += test[i].succ;
+		res[index].fail += test[i].fail;
 	}
 
 	/* print results */
-	gconf.printer.result(&gconf, compd_config, utkv_ptr(res), file_cnt);
+	gconf.printer.result(&gconf, compd_config, res, file_cnt);
 
-	utkv_destroy(res);
+	free(res);
 	free(sorted_file_idx);
 	free(file_idx);
 	free(compd_config);
@@ -1557,6 +1551,8 @@ int unittest_main(int argc, char *argv[])
 	#if UNITTEST != 0
 		return(ut_main_impl(argc, argv));
 	#else
+		ut_unused(argc);
+		ut_unused(argv);
 		return(0);
 	#endif
 }

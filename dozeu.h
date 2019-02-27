@@ -95,7 +95,7 @@ enum dz_alphabet {
 #  define UNITTEST_ALIAS_MAIN		0
 #  define UNITTEST_UNIQUE_ID		3213
 #  include "unittest.h"
-unittest_config( "dozeu" );
+unittest_config( .name = "dozeu" );
 unittest() { debug("hello"); }
 #else
 #  define unittest(...)				static void dz_pp_cat(dz_unused_, __LINE__)(void)
