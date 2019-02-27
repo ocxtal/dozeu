@@ -1144,7 +1144,6 @@ unittest() {
 	__m128i const xtv = _mm_set1_epi16(dz_add_ofs(w.inc - self->xt));	/* next offset == current max thus X-drop threshold is always -xt */ \
 	__m128i const ofs = _mm_set1_epi16(DZ_SCORE_OFS); \
 	/* until the bottommost vertically placed band... */ \
-	uint32_t sspos = w.r.spos;					/* save spos on the stack */ \
 	for(uint64_t p = w.r.spos; p < w.r.epos; p++) { \
 		_load_vector(&pdp[p]); _update_vector(p); \
 		if(dz_unlikely(_test_xdrop(s, xtv))) {	/* mark _unlikely to move out of the core loop */ \
