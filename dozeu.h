@@ -90,7 +90,7 @@ enum dz_alphabet {
 	dz_static_assert(DZ_MAT_SIZE <= 32);
 #endif
 
-#if (defined(DEBUG) || defined(UNITTEST)) && !defined(__cplusplus)
+#if (defined(DEBUG) || (defined(UNITTEST) && UNITTEST != 0)) && !defined(__cplusplus)
 #  include "log.h"
 #  define UNITTEST_ALIAS_MAIN		0
 #  define UNITTEST_UNIQUE_ID		3213
@@ -98,10 +98,12 @@ enum dz_alphabet {
 unittest_config( .name = "dozeu" );
 unittest() { debug("hello"); }
 #else
-#  define unittest(...)				static void dz_pp_cat(dz_unused_, __LINE__)(void)
-#  define ut_assert(...)			;
-#  define debug(...)				;
-#  define trap()					;
+#  ifndef UNITTEST_H_INCLUDED
+#    define unittest(...)				static void dz_pp_cat(dz_unused_, __LINE__)(void)
+#    define ut_assert(...)			;
+#    define debug(...)				;
+#    define trap()					;
+#  endif
 #endif
 
 
@@ -142,7 +144,7 @@ unittest() { debug("hello"); }
 #define dz_loadu_u64(p)				({ uint8_t const *_p = (uint8_t const *)(p); *((uint64_t const *)_p); })
 #define dz_storeu_u64(p, e)			{ uint8_t *_p = (uint8_t *)(p); *((uint64_t *)(_p)) = (e); }
 
-#define dz_add_ofs(_x)				( (uint16_t)(_x) ^ (uint16_t)0x8000 )
+#define dz_add_ofs(_x)				( (int16_t)((uint16_t)(_x) ^ (uint16_t)0x8000) )
 #define dz_rm_ofs(_x)				( (int16_t)((uint16_t)(_x) ^ (uint16_t)0x8000) )
 
 
@@ -744,6 +746,9 @@ void dz_flush(
 	return;
 }
 
+#if defined(UNITTEST) && UNITTEST != 0
+
+/* unittest stuffs */
 #if defined(DZ_NUCL_ASCII)
 static size_t const dz_unittest_query_length = 560;
 static char const *dz_unittest_query =
@@ -848,6 +853,8 @@ unittest() {
 	ut_assert(dz->root != NULL);
 	dz_destroy(dz);
 }
+
+#endif	/* defined(UNITTEST) && UNITTEST != 0 */
 
 /**
  * @fn dz_pack_query, dz_pack_query_reverse
@@ -1070,6 +1077,7 @@ struct dz_query_s *dz_pack_query(
 }
 
 
+#if defined(UNITTEST) && UNITTEST != 0
 unittest() {
 	struct dz_s *dz = dz_init(DZ_UNITTEST_SCORE_PARAMS);
 	ut_assert(dz != NULL);
@@ -1078,6 +1086,8 @@ unittest() {
 	dz_unused(q);
 	dz_destroy(dz);
 }
+#endif	/* defined(UNITTEST) && UNITTEST != 0 */
+
 
 #define _merge_column(w, adj, forefronts, n_forefronts, query, init_s) ({ \
 	for(size_t i = 0; i < n_forefronts; i++) { \
@@ -1272,6 +1282,10 @@ struct dz_forefront_s const *dz_scan(
 #undef _merge_column
 #undef _fill_column
 
+
+
+#if defined(UNITTEST) && UNITTEST != 0
+
 /* short, exact matching sequences */
 unittest( "extend.base" ) {
 	struct dz_s *dz = dz_init(DZ_UNITTEST_SCORE_PARAMS);
@@ -1420,6 +1434,9 @@ unittest( "extend.small" ) {
 	}
 	dz_destroy(dz);
 }
+
+#endif	/* defined(UNITTEST) && UNITTEST != 0 */
+
 
 /**
  * @fn dz_calc_max_rpos
@@ -1640,6 +1657,10 @@ _trace_tail:;
 #undef _idx_dsc
 #undef _load_prev_cap
 
+
+
+#if defined(UNITTEST) && UNITTEST != 0
+
 /* short, exact matching sequences */
 unittest( "trace" ) {
 	struct dz_s *dz = dz_init(DZ_UNITTEST_SCORE_PARAMS);
@@ -1661,6 +1682,9 @@ unittest( "trace" ) {
 	(void)aln;
 	dz_destroy(dz);
 }
+
+#endif	/* defined(UNITTEST) && UNITTEST != 0 */
+
 
 #ifdef __cplusplus
 };	/* extern "C" { */
