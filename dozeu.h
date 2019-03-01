@@ -1649,6 +1649,11 @@ _trace_tail:;
 	}
 	span[span_length].offset = path_length;
 	return(aln);
+
+	#undef _debug
+	#undef _match
+	#undef _ins
+	#undef _del
 }
 
 #undef _is_head
