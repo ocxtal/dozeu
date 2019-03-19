@@ -1174,8 +1174,8 @@ void dz_merge_fold_col(dz_work_t *w, dz_swgv_t *col)
 		for(uint64_t p = ff->range.spos; p < ff->range.epos; p++) {
 			/* adjust offset */
 			dz_swgv_t const v = dz_load_swgv(&prev_col[p]);
-			dz_swgv_t const w = dz_load_swgv(&col[p]);
-			dz_swgv_t const u = dz_max_swgv(w, dz_subs_swgv(v, adjv));
+			dz_swgv_t const x = dz_load_swgv(&col[p]);
+			dz_swgv_t const u = dz_max_swgv(x, dz_subs_swgv(v, adjv));
 			print_vector(u.s);
 			dz_store_swgv(&col[p], u);
 		}
