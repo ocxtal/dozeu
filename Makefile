@@ -9,14 +9,11 @@ TGTS = $(SRCS:.c=)
 
 all: $(TGTS)
 
-.c.o:
-	$(CC) $(CFLAGS) -o $(<:c=o) $<
+$(TGTS): $(SRCS) dozeu.h
+	$(CC) $(CFLAGS) -o $@ $@.c
 
 test: all
 	(for t in $(TGTS); do ./$$t; done && echo "succeeded") || echo "failed"
 
 clean:
 	rm -f $(TGTS)
-
-$(TGTS): dozeu.h
-
