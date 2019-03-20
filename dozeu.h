@@ -81,7 +81,10 @@ enum dz_alphabet {
 #define dz_pair_eq(_profile, _q, _r, _i)		( (uint32_t)((_q)->arr[(_i)]) == ((uint32_t)(_r)<<2) )
 
 #elif defined(DZ_NUCL_4BIT)
-#define DZ_MAT_SIZE					( 16 )		/* 16 x 16 */
+
+#ifndef DZ_MAT_SIZE
+#  define DZ_MAT_SIZE					( 16 )		/* 16 x 16 */
+#endif
 
 /* 4bit nucleotide (with ambiguous bases) */
 enum dz_alphabet_reference {
@@ -109,15 +112,15 @@ enum dz_alphabet_query {
 };
 
 /* matcher; bit[4] for invalid flag */
-#define dz_pair_score(_profile, _q, _r, _i)		( (_profile)->matrix[((_r) & (_q)->arr[(_i)]) & 0x0f] - DZ_SCORE_OFS )
+#define dz_pair_score(_profile, _q, _r, _i)		( (_profile)->matrix[(_r) * DZ_MAT_SIZE + (_q)->arr[(_i)]] - DZ_SCORE_OFS )
 #define dz_pair_eq(_profile, _q, _r, _i)		( (uint32_t)((_q)->arr[(_i)]) == (uint32_t)(_r) )
 
 #elif defined(DZ_PROTEIN)
 
 /* protein */
-#  ifndef DZ_MAT_SIZE
-#    define DZ_MAT_SIZE				( 32 )		/* 32 x 32 */
-#  endif
+#ifndef DZ_MAT_SIZE
+#  define DZ_MAT_SIZE				( 32 )		/* 32 x 32 */
+#endif
 #define dz_pair_score(_profile, _q, _r, _i)		( (int8_t)((_q)->arr[(_r) * (_q)->blen * DZ_L + (_i)]) - DZ_SCORE_OFS )
 #define dz_pair_eq(_profile, _q, _r, _i)		( (uint32_t)((_q)->q[(_i) - 1] & 0x1f) == (uint32_t)(_r) )
 #endif
@@ -156,11 +159,11 @@ unittest() { debug("hello"); }
 #elif defined(DZ_NUCL_2BIT)
 #  define DZ_UNITTEST_INDEX			1
 #elif defined(DZ_NUCL_4BIT)
-#  define DZ_UNITTEST_INDEX			3
-#elif defined(DZ_PROTEIN)
 #  define DZ_UNITTEST_INDEX			2
+#elif defined(DZ_PROTEIN)
+#  define DZ_UNITTEST_INDEX			3
 #endif
-#define dz_ut_sel(a, b, c)			( (DZ_UNITTEST_INDEX == 0) ? (a) : ((DZ_UNITTEST_INDEX == 1) ? (b) : (c)) )
+#define dz_ut_sel(a, b, c, d)		( (DZ_UNITTEST_INDEX == 0) ? (a) : (DZ_UNITTEST_INDEX == 1) ? (b) : (DZ_UNITTEST_INDEX == 2) ? (c) : (d) )
 
 /* vectorize */
 #ifndef __x86_64__
@@ -221,6 +224,27 @@ unittest() { debug("hello"); }
 	_mm_extract_epi16(v, 1), \
 	_mm_extract_epi16(v, 0)); \
 }
+
+#define print_vector_8(v) { \
+	debug("%s (%d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d)", #v, \
+	_mm_extract_epi8(v, 8 + 7), \
+	_mm_extract_epi8(v, 8 + 6), \
+	_mm_extract_epi8(v, 8 + 5), \
+	_mm_extract_epi8(v, 8 + 4), \
+	_mm_extract_epi8(v, 8 + 3), \
+	_mm_extract_epi8(v, 8 + 2), \
+	_mm_extract_epi8(v, 8 + 1), \
+	_mm_extract_epi8(v, 8 + 0), \
+	_mm_extract_epi8(v, 7), \
+	_mm_extract_epi8(v, 6), \
+	_mm_extract_epi8(v, 5), \
+	_mm_extract_epi8(v, 4), \
+	_mm_extract_epi8(v, 3), \
+	_mm_extract_epi8(v, 2), \
+	_mm_extract_epi8(v, 1), \
+	_mm_extract_epi8(v, 0)); \
+}
+
 
 #else
 #define print_vector(v) ;
@@ -566,6 +590,8 @@ typedef struct {
 
 	#elif defined(DZ_NUCL_4BIT)
 		__m128i matrix;
+		int8_t const *score_matrix;
+		uint64_t conv;
 
 	#elif defined(DZ_PROTEIN)
 		int8_t const *parr;
@@ -605,6 +631,10 @@ dz_ref_fetcher_t dz_init_fetcher(dz_profile_t const *profile, dz_ref_t const *re
 
 	#elif defined(DZ_NUCL_2BIT)
 		fetcher.matrix = _mm_loadu_si128((__m128i const *)profile->matrix);
+
+	#elif defined(DZ_NUCL_4BIT)
+		fetcher.score_matrix = profile->matrix;
+		fetcher.conv = ref->dir < 0 ? 0xf7b3d591e6a2c480 : 0xfedcba9876543210;
 
 	#else
 		dz_unused(profile);
@@ -653,9 +683,12 @@ uint64_t dz_fetch_next(dz_ref_fetcher_t *fetcher)
 		fetcher->rv = _mm_set1_epi8(e);
 
 	#elif defined(DZ_NUCL_4BIT)
-		uint32_t const c = fetcher->rt[-fetcher->rstate.rem] & 0x0f;
-		fetcher->rstate.ch = c;
-		fetcher->matrix = _mm_load_si128((__m128i const *)&fetcher->query->arr[c * DZ_MAT_SIZE]);
+		uint32_t const c =  fetcher->rt[-fetcher->rstate.rem];
+		uint32_t const e = (fetcher->conv>>(4 * c)) & 0x0f;
+		fetcher->rstate.ch = e;
+		fetcher->matrix = _mm_load_si128((__m128i const *)&fetcher->score_matrix[e * DZ_MAT_SIZE]);
+		debug("ch(%x, %x), rem(%d), dir(%d)", c, e, fetcher->rstate.rem, fetcher->dir);
+		// print_vector_8(fetcher->matrix);
 
 	#elif defined(DZ_PROTEIN)
 		uint32_t const c = fetcher->rt[-fetcher->rstate.rem] & 0x1f;
@@ -692,6 +725,10 @@ __m128i dz_calc_score_profile(dz_ref_fetcher_t *fetcher, size_t p)
 		);
 		__m128i const sc = _mm_shuffle_epi8(fetcher->matrix, qv);
 		__m128i const v = _mm_cvtepi8_epi16(sc);
+
+		print_vector_raw(_mm_cvtepi8_epi16(qv));
+		print_vector_raw(_mm_cvtepi8_epi16(sc));
+		print_vector_raw(v);
 
 	#elif defined(DZ_PROTEIN)
 		__m128i const v = _mm_cvtepi8_epi16(
@@ -1524,8 +1561,8 @@ void dz_init_score_matrix(
 	int8_t const *score_matrix)
 {
 	/* transpose */
-	for(uint64_t i = 0; i < DZ_MAT_SIZE; i++) {
-		for(uint64_t j = 0; j < DZ_MAT_SIZE; j++) {
+	for(size_t i = 0; i < DZ_MAT_SIZE; i++) {
+		for(size_t j = 0; j < DZ_MAT_SIZE; j++) {
 			profile->matrix[j * DZ_MAT_SIZE + i] = score_matrix[i * DZ_MAT_SIZE + j] + DZ_SCORE_OFS;
 		}
 	}
@@ -1612,7 +1649,7 @@ size_t dz_init_root_column(dz_profile_t const *profile, dz_score_conf_t const *c
 	fw.col  = col;
 
 	/* until the X-drop test fails on all the cells in a vector */
-	for(uint64_t p = 0; p < blen; p++) {
+	for(size_t p = 0; p < blen; p++) {
 		fw.f = fw.s;
 		print_vector(fw.s);
 
@@ -1885,6 +1922,45 @@ static int8_t const dz_unittest_score_matrix[16] = {
 	2, -3, -3, -3, -3, 2, -3, -3, -3, -3, 2, -3, -3, -3, -3, 2
 };
 
+#elif defined(DZ_NUCL_4BIT)
+static size_t const dz_unittest_query_length = 560;
+static char const *dz_unittest_query =
+	"\x1\x4\x2\x8\x8\x8\x8\x2\x1\x8\x8\x2\x8\x4\x1\x2\x8\x4\x2\x1\x1\x2\x4\x4\x4\x2\x1\x1\x8\x1\x8\x4\x8\x2\x8"
+	"\x2\x8\x4\x8\x4\x8\x4\x4\x1\x8\x8\x1\x1\x1\x1\x1\x1\x1\x4\x1\x4\x8\x4\x8\x2\x8\x4\x1\x8\x1\x4\x2\x1\x4\x2"
+	"\x8\x8\x2\x8\x4\x1\x1\x2\x8\x4\x4\x8\x8\x1\x2\x2\x8\x4\x2\x2\x4\x8\x4\x1\x4\x8\x1\x1\x1\x8\x8\x1\x1\x1\x1"
+	"\x8\x8\x8\x8\x1\x8\x8\x4\x1\x2\x8\x8\x1\x4\x4\x8\x2\x1\x2\x8\x1\x1\x1\x8\x1\x2\x8\x8\x8\x1\x1\x2\x2\x1\x1"
+	"\x8\x1\x8\x1\x4\x4\x2\x1\x8\x1\x4\x2\x4\x2\x1\x2\x1\x4\x1\x2\x1\x4\x1\x8\x1\x1\x1\x1\x1\x8\x8\x1\x2\x1\x4"
+	"\x1\x4\x8\x1\x2\x1\x2\x1\x1\x2\x1\x8\x2\x2\x1\x8\x4\x1\x1\x1\x2\x4\x2\x1\x8\x8\x1\x4\x2\x1\x2\x2\x1\x2\x2"
+	"\x1\x8\x8\x1\x2\x2\x1\x2\x2\x1\x2\x2\x1\x8\x2\x1\x2\x2\x1\x8\x8\x1\x2\x2\x1\x2\x1\x4\x4\x8\x1\x1\x2\x4\x4"
+	"\x8\x4\x2\x4\x4\x4\x2\x8\x4\x1\x2\x4\x2\x4\x8\x1\x2\x1\x4\x4\x1\x1\x1\x2\x1\x2\x1\x4\x1\x1\x1\x1\x1\x1\x4"
+	"\x2\x2\x2\x4\x2\x1\x2\x2\x8\x4\x1\x2\x1\x4\x8\x4\x2\x4\x4\x4\x2\x8\x8\x8\x8\x8\x8\x8\x8\x8\x2\x4\x1\x2\x2"
+	"\x1\x1\x1\x4\x4\x8\x1\x1\x2\x4\x1\x4\x4\x8\x1\x1\x2\x1\x1\x2\x2\x1\x8\x4\x2\x4\x1\x4\x8\x4\x8\x8\x4\x1\x1"
+	"\x4\x8\x8\x2\x4\x4\x2\x4\x4\x8\x1\x2\x1\x8\x2\x1\x4\x8\x4\x4\x2\x1\x1\x1\x8\x4\x2\x1\x4\x1\x1\x2\x4\x8\x8"
+	"\x8\x8\x2\x8\x4\x2\x4\x8\x4\x8\x8\x4\x2\x2\x4\x1\x8\x1\x8\x8\x2\x8\x4\x4\x1\x1\x1\x4\x2\x1\x1\x8\x4\x2\x2"
+	"\x1\x4\x4\x2\x1\x4\x4\x4\x4\x2\x1\x4\x4\x8\x4\x4\x2\x2\x1\x2\x2\x4\x8\x2\x2\x8\x2\x8\x2\x8\x4\x2\x2\x2\x2"
+	"\x2\x4\x2\x2\x1\x1\x1\x1\x8\x2\x1\x2\x2\x1\x1\x2\x2\x1\x2\x2\x8\x4\x4\x8\x4\x4\x2\x4\x1\x8\x4\x1\x8\x8\x4"
+	"\x1\x1\x1\x1\x1\x1\x2\x2\x1\x8\x8\x1\x4\x2\x4\x4\x2\x2\x1\x4\x4\x1\x8\x4\x2\x8\x8\x8\x1\x2\x2\x2\x1\x1\x8"
+	"\x1\x8\x2\x1\x4\x2\x4\x1\x8\x4\x2\x2\x4\x1\x1\x2\x4\x8\x1\x8\x8\x8\x8\x8\x4\x2\x2\x4\x1\x1\x2\x8\x8\x8\x8";
+
+static int8_t const dz_unittest_score_matrix[16 * 16] = {
+	2, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3,
+	-3, 2, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3,
+	-3, -3, 2, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3,
+	-3, -3, -3, 2, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3,
+	-3, -3, -3, -3, 2, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3,
+	-3, -3, -3, -3, -3, 2, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3,
+	-3, -3, -3, -3, -3, -3, 2, -3, -3, -3, -3, -3, -3, -3, -3, -3,
+	-3, -3, -3, -3, -3, -3, -3, 2, -3, -3, -3, -3, -3, -3, -3, -3,
+	-3, -3, -3, -3, -3, -3, -3, -3, 2, -3, -3, -3, -3, -3, -3, -3,
+	-3, -3, -3, -3, -3, -3, -3, -3, -3, 2, -3, -3, -3, -3, -3, -3,
+	-3, -3, -3, -3, -3, -3, -3, -3, -3, -3, 2, -3, -3, -3, -3, -3,
+	-3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, 2, -3, -3, -3, -3,
+	-3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, 2, -3, -3, -3,
+	-3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, 2, -3, -3,
+	-3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, 2, -3,
+	-3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, 2
+};
+
 #elif defined(DZ_PROTEIN)
 static size_t const dz_unittest_query_length = 511;
 static char const *dz_unittest_query =
@@ -1967,7 +2043,7 @@ typedef struct {
  * @fn dz_pack_query, dz_pack_query_reverse
  * packed sequence object is allocated inside the context so freed by dz_flush
  */
-#if defined(DZ_NUCL_ASCII) || defined(DZ_NUCL_2BIT)
+#if defined(DZ_NUCL_ASCII) || defined(DZ_NUCL_2BIT) || defined(DZ_NUCL_4BIT)
 
 /* profile vector is calculated on-the-fly */
 static __dz_vectorize
@@ -2001,7 +2077,9 @@ dz_query_t *dz_pack_query_alloc_mem(
 	return(q);
 }
 
-/* { ASCII / 2bit } -> 4bit conversion */
+#if defined(DZ_NUCL_ASCII) || defined(DZ_NUCL_2BIT)
+
+/* { ASCII / 2bit } -> 2bit conversion */
 static __dz_vectorize
 __m128i dz_query_conv_bulk_forward(int8_t const *score_matrix, __m128i v)
 {
@@ -2073,6 +2151,60 @@ uint8_t dz_query_conv_single_reverse(int8_t const *score_matrix, uint8_t c)
 }
 
 
+#elif defined(DZ_NUCL_4BIT)
+static __dz_vectorize
+__m128i dz_query_conv_bulk_forward(int8_t const *score_matrix, __m128i v)
+{
+	dz_unused(score_matrix);
+
+	// print_vector_8(v);
+	return(v);
+}
+
+static __dz_vectorize
+uint8_t dz_query_conv_single_forward(int8_t const *score_matrix, uint8_t c)
+{
+	dz_unused(score_matrix);
+
+	return(c & 0x0f);
+}
+
+/* complement for reverse */
+static __dz_vectorize
+__m128i dz_query_conv_bulk_reverse(int8_t const *score_matrix, __m128i v)
+{
+	dz_unused(score_matrix);
+
+	static uint8_t const comp[16] __attribute__(( aligned(16) )) = {
+		0x00, 0x08, 0x04, 0x0c, 0x02, 0x0a, 0x06, 0x0e,
+		0x01, 0x09, 0x05, 0x0d, 0x03, 0x0b, 0x07, 0x0f
+	};
+	__m128i const cv = _mm_load_si128((__m128i const *)comp);
+	__m128i const w = _mm_shuffle_epi8(cv, v);
+
+	// print_vector_8(v);
+	// print_vector_8(cv);
+	// print_vector_8(w);
+	return(w);
+}
+
+static __dz_vectorize
+uint8_t dz_query_conv_single_reverse(int8_t const *score_matrix, uint8_t c)
+{
+	dz_unused(score_matrix);
+
+	static uint8_t const comp[16] __attribute__(( aligned(16) )) = {
+		0x00, 0x08, 0x04, 0x0c, 0x02, 0x0a, 0x06, 0x0e,
+		0x01, 0x09, 0x05, 0x0d, 0x03, 0x0b, 0x07, 0x0f
+	};
+
+	debug("c(%x, %x)", c, comp[c & 0x0f]);
+	return(comp[c & 0x0f]);
+}
+
+#endif
+
+
 static __dz_vectorize
 size_t dz_pack_query_forward_core(
 	dz_query_t *q,
@@ -2140,6 +2272,7 @@ size_t dz_pack_query_reverse_core(
 	__m128i pv = _mm_set1_epi8((int8_t)qN);
 	for(size_t i = 0; i < blen; i += sizeof(__m128i)) {
 		__m128i const qv = _mm_loadu_si128((__m128i const *)&query[qlen - 16 - i]);
+		// print_vector_8(qv);
 		__m128i const tv = qconv.bulk(NULL, _mm_shuffle_epi8(qv, rv));
 
 		/* shift by one to make room for the top row */
@@ -2166,7 +2299,7 @@ size_t dz_pack_query_reverse_core(
 	return(clen);
 }
 
-#elif defined(DZ_PROTEIN) || defined(DZ_NUCL_4BIT)
+#elif defined(DZ_PROTEIN)
 
 /* allocate precalculated profile vector */
 static __dz_vectorize
@@ -2193,7 +2326,6 @@ dz_query_t *dz_pack_query_alloc_mem(
 	return(q);
 }
 
-#if defined(DZ_PROTEIN)
 static __dz_vectorize
 __m128i dz_query_conv_bulk_forward(int8_t const *score_matrix, __m128i v)
 {
@@ -2229,51 +2361,6 @@ uint8_t dz_query_conv_single_reverse(int8_t const *score_matrix, uint8_t c)
 	return(dz_query_conv_single_forward(score_matrix, c));
 }
 
-
-#elif defined(DZ_NUCL_4BIT)
-static __dz_vectorize
-__m128i dz_query_conv_bulk_forward(int8_t const *score_matrix, __m128i v)
-{
-	__m128i const sv = _mm_loadu_si128((__m128i const *)score_matrix);
-	__m128i const w = _mm_shuffle_epi8(sv, v);
-	return(w);
-}
-
-static __dz_vectorize
-uint8_t dz_query_conv_single_forward(int8_t const *score_matrix, uint8_t c)
-{
-	/* conv[(uint8_t)query[i] & 0x1f]; */
-	return(score_matrix[c & 0x0f]);
-}
-
-/* complement for reverse */
-static __dz_vectorize
-__m128i dz_query_conv_bulk_reverse(int8_t const *score_matrix, __m128i v)
-{
-	static uint8_t const comp[16] __attribute__(( aligned(16) )) = {
-		0x00, 0x08, 0x04, 0x0c, 0x02, 0x0a, 0x06, 0x0e,
-		0x01, 0x09, 0x05, 0x0d, 0x03, 0x0b, 0x07, 0x0f
-	};
-
-	__m128i const cv = _mm_load_si128((__m128i const *)comp);
-	__m128i const sv = _mm_loadu_si128((__m128i const *)score_matrix);
-	__m128i const w = _mm_shuffle_epi8(sv, _mm_shuffle_epi8(cv, v));
-	return(w);
-}
-
-static __dz_vectorize
-uint8_t dz_query_conv_single_reverse(int8_t const *score_matrix, uint8_t c)
-{
-	static uint8_t const comp[16] __attribute__(( aligned(16) )) = {
-		0x00, 0x08, 0x04, 0x0c, 0x02, 0x0a, 0x06, 0x0e,
-		0x01, 0x09, 0x05, 0x0d, 0x03, 0x0b, 0x07, 0x0f
-	};
-	return(score_matrix[comp[c & 0x0f]]);
-}
-
-
-#endif
-
 static __dz_vectorize
 size_t dz_pack_query_forward_core(
 	dz_query_t *q,
@@ -2287,12 +2374,15 @@ size_t dz_pack_query_forward_core(
 	size_t const blen = dz_rounddown(qlen, sizeof(__m128i));
 
 	/* calculate profile for each base (residue) */
-	for(uint64_t j = 0; j < DZ_MAT_SIZE; j++) {
+	for(size_t j = 0; j < DZ_MAT_SIZE; j++) {
 		int8_t *a = (int8_t *)&q->arr[j * clen];
 		a[0] = 0;				/* as -DZ_SCORE_OFS */
 
 		int8_t const *score_matrix = &profile->matrix[j * DZ_MAT_SIZE];
 		__m128i pv = _mm_setzero_si128();	/* as -DZ_SCORE_OFS */
+
+		debug("j(%zu)", j);
+		// print_vector_8(_mm_loadu_si128((__m128i const *)score_matrix));
 
 		/* until the end of the query sequence */
 		for(size_t i = 0; i < blen; i += sizeof(__m128i)) {
@@ -2337,7 +2427,7 @@ size_t dz_pack_query_reverse_core(
 	};
 	__m128i const rv = _mm_load_si128((__m128i const *)rev);
 
-	for(uint64_t j = 0; j < DZ_MAT_SIZE; j++) {
+	for(size_t j = 0; j < DZ_MAT_SIZE; j++) {
 		int8_t *a = (int8_t *)&q->arr[j * clen];
 		a[0] = 0;
 
@@ -2470,22 +2560,22 @@ unittest( "extend.base" ) {
 		ut_assert(forefront == *dz_root(dz));
 
 		/* extend */
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("A", "\x0", "M"), 1, 4);
-		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(2, 2, 5), "max(%u), cell(%u)", forefront->max, dz_ut_sel(2, 2, 5));
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("A", "\x0", "\x1", "M"), 1, 4);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(2, 2, 2, 5), "max(%u), cell(%u)", forefront->max, dz_ut_sel(2, 2, 2, 5));
 
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AG", "\x0\x2", "MA"), 2, 5);
-		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(4, 4, 9), "max(%u), cell(%u)", forefront->max, dz_ut_sel(4, 4, 9));
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AG", "\x0\x2", "\x1\x4", "MA"), 2, 5);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(4, 4, 4, 9), "max(%u), cell(%u)", forefront->max, dz_ut_sel(4, 4, 4, 9));
 		if(trial == 1) { continue; }
 
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTT", "\x0\x2\x0\x3\x3\x3\x3", "MASLVQT"), 7, 6);
-		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(9, 9, 28), "max(%u), cell(%u)", forefront->max, dz_ut_sel(9, 9, 28));
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTT", "\x0\x2\x0\x3\x3\x3\x3", "\x1\x4\x1\x8\x8\x8\x8", "MASLVQT"), 7, 6);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(9, 9, 9, 28), "max(%u), cell(%u)", forefront->max, dz_ut_sel(9, 9, 9, 28));
 		if(trial == 2) { continue; }
 
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTTC", "\x0\x2\x0\x3\x3\x3\x3\x1", "MASLVQTG"), 8, 7);
-		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(11, 11, 34), "max(%u), cell(%u)", forefront->max, dz_ut_sel(11, 11, 34));
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTTC", "\x0\x2\x0\x3\x3\x3\x3\x1", "\x1\x4\x1\x8\x8\x8\x8\x2", "MASLVQTG"), 8, 7);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(11, 11, 11, 34), "max(%u), cell(%u)", forefront->max, dz_ut_sel(11, 11, 11, 34));
 
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTTCA", "\x0\x2\x0\x3\x3\x3\x3\x1\x0", "MASLVQTGK"), 9, 8);
-		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(13, 13, 39), "max(%u), cell(%u)", forefront->max, dz_ut_sel(13, 13, 39));
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTTCA", "\x0\x2\x0\x3\x3\x3\x3\x1\x0", "\x1\x4\x1\x8\x8\x8\x8\x2\x1", "MASLVQTGK"), 9, 8);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(13, 13, 13, 39), "max(%u), cell(%u)", forefront->max, dz_ut_sel(13, 13, 13, 39));
 
 		dz_unused(forefront);
 	}
@@ -2503,10 +2593,10 @@ unittest( "extend.base.revcomp" ) {
 			case 'C': revcomp[i] = 'G'; break;
 			case 'G': revcomp[i] = 'C'; break;
 			case 'T': revcomp[i] = 'A'; break;
-			case 0: revcomp[i] = 3; break;
-			case 1: revcomp[i] = 2; break;
-			case 2: revcomp[i] = 1; break;
-			case 3: revcomp[i] = 0; break;
+			case rA: revcomp[i] = rT; break;
+			case rC: revcomp[i] = rG; break;
+			case rG: revcomp[i] = rC; break;
+			case rT: revcomp[i] = rA; break;
 		}
 	}
 	for(size_t trial = 0; trial < 3; trial++) {
@@ -2525,28 +2615,28 @@ unittest( "extend.base.revcomp" ) {
 		ut_assert(forefront == *dz_root(dz));
 
 		/* extend */
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("A", "\x0", "M"), 1, 4);
-		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(2, 2, 5));
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("A", "\x0", "\x1", "M"), 1, 4);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(2, 2, 2, 5));
 
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AG", "\x0\x2", "MA"), 2, 5);
-		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(4, 4, 9));
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AG", "\x0\x2", "\x1\x4", "MA"), 2, 5);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(4, 4, 4, 9));
 		if(trial == 1) { continue; }
 
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTT", "\x0\x2\x0\x3\x3\x3\x3", "MASLVQT"), 7, 6);
-		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(9, 9, 28));
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel(&"AAAATCT"[7], &"\x0\x0\x0\x0\x3\x1\x3"[7], "MASLVQT"), -7, 6);
-		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(9, 9, 28));
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTT", "\x0\x2\x0\x3\x3\x3\x3", "\x1\x4\x1\x8\x8\x8\x8", "MASLVQT"), 7, 6);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(9, 9, 9, 28));
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel(&"AAAATCT"[7], &"\x0\x0\x0\x0\x3\x1\x3"[7], &"\x1\x1\x1\x1\x8\x2\x8"[7], "MASLVQT"), -7, 6);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(9, 9, 9, 28));
 		if(trial == 2) { continue; }
 
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTTC", "\x0\x2\x0\x3\x3\x3\x3\x1", "MASLVQTG"), 8, 7);
-		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(11, 11, 34));
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel(&"GAAAATCT"[8], &"\x2\x0\x0\x0\x0\x3\x1\x3"[8], "MASLVQTG"), -8, 7);
-		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(11, 11, 28));
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTTC", "\x0\x2\x0\x3\x3\x3\x3\x1", "\x1\x4\x1\x8\x8\x8\x8\x2", "MASLVQTG"), 8, 7);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(11, 11, 11, 34));
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel(&"GAAAATCT"[8], &"\x2\x0\x0\x0\x0\x3\x1\x3"[8], &"\x4\x1\x1\x1\x1\x8\x2\x8"[8], "MASLVQTG"), -8, 7);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(11, 11, 11, 28));
 
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTTCA", "\x0\x2\x0\x3\x3\x3\x3\x1\x0", "MASLVQTGK"), 9, 8);
-		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(13, 13, 39));
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel(&"TGAAAATCT"[9], &"\x3\x2\x0\x0\x0\x0\x3\x1\x3"[9], "MASLVQTGK"), -9, 8);
-		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(13, 13, 28));
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTTCA", "\x0\x2\x0\x3\x3\x3\x3\x1\x0", "\x1\x4\x1\x8\x8\x8\x8\x2\x1", "MASLVQTGK"), 9, 8);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(13, 13, 13, 39));
+		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel(&"TGAAAATCT"[9], &"\x3\x2\x0\x0\x0\x0\x3\x1\x3"[9], &"\x8\x4\x1\x1\x1\x1\x8\x2\x8"[9], "MASLVQTGK"), -9, 8);
+		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(13, 13, 13, 28));
 
 		dz_unused(forefront);
 	}
@@ -2573,26 +2663,26 @@ unittest( "extend.small" ) {
 		 *   \ /    \    /
 		 *    C      CATT
 		 */
-		forefronts[0] = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AG", "\x0\x2", "MA"), 2, 1);
-		ut_assert(forefronts[0] != NULL && forefronts[0]->max == dz_ut_sel(4, 4, 9));
+		forefronts[0] = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AG", "\x0\x2", "\x1\x4", "MA"), 2, 1);
+		ut_assert(forefronts[0] != NULL && forefronts[0]->max == dz_ut_sel(4, 4, 4, 9));
 
-		forefronts[1] = dz_extend(dz, q, &forefronts[0], 1, dz_ut_sel("C", "\x1", "T"), 1, 2);
-		ut_assert(forefronts[1] != NULL && forefronts[1]->max == dz_ut_sel(6, 6, 14));
+		forefronts[1] = dz_extend(dz, q, &forefronts[0], 1, dz_ut_sel("C", "\x1", "\x2", "T"), 1, 2);
+		ut_assert(forefronts[1] != NULL && forefronts[1]->max == dz_ut_sel(6, 6, 6, 14));
 		if(trial == 1) { continue; }
 
-		forefronts[2] = dz_extend(dz, q, &forefronts[0], 2, dz_ut_sel("TTTT", "\x3\x3\x3\x3", "LVQT"), 4, 3);
+		forefronts[2] = dz_extend(dz, q, &forefronts[0], 2, dz_ut_sel("TTTT", "\x3\x3\x3\x3", "\x8\x8\x8\x8", "LVQT"), 4, 3);
 		if(trial == 2) {
-			ut_assert(forefronts[2] != NULL && forefronts[2]->max == dz_ut_sel(8, 8, 18));
+			ut_assert(forefronts[2] != NULL && forefronts[2]->max == dz_ut_sel(8, 8, 8, 18));
 			continue;
 		}
-		ut_assert(forefronts[2] != NULL && forefronts[2]->max == dz_ut_sel(14, 14, 32));
+		ut_assert(forefronts[2] != NULL && forefronts[2]->max == dz_ut_sel(14, 14, 14, 32));
 		if(trial == 3) { continue; }
 
-		forefronts[3] = dz_extend(dz, q, &forefronts[2], 1, dz_ut_sel("CATT", "\x1\x0\x3\x3", "CKAK"), 4, 4);
-		ut_assert(forefronts[3] != NULL && forefronts[3]->max == dz_ut_sel(22, 22, 43));
+		forefronts[3] = dz_extend(dz, q, &forefronts[2], 1, dz_ut_sel("CATT", "\x1\x0\x3\x3", "\x2\x1\x8\x8", "CKAK"), 4, 4);
+		ut_assert(forefronts[3] != NULL && forefronts[3]->max == dz_ut_sel(22, 22, 22, 43));
 
-		forefronts[4] = dz_extend(dz, q, &forefronts[2], 2, dz_ut_sel("CTGA", "\x1\x3\x2\x0", "QLTL"), 4, 5);
-		ut_assert(forefronts[4] != NULL && forefronts[4]->max == dz_ut_sel(30, 30, 61));
+		forefronts[4] = dz_extend(dz, q, &forefronts[2], 2, dz_ut_sel("CTGA", "\x1\x3\x2\x0", "\x2\x8\x4\x1", "QLTL"), 4, 5);
+		ut_assert(forefronts[4] != NULL && forefronts[4]->max == dz_ut_sel(30, 30, 30, 61));
 	}
 	dz_destroy(dz);
 }
@@ -2616,7 +2706,7 @@ int64_t dz_calc_max_rpos_core(dz_state_t const *ff)
 }
 
 static __dz_vectorize
-size_t dz_finalize_qpos(uint64_t p, uint64_t eq)
+uint64_t dz_finalize_qpos(size_t p, uint64_t eq)
 {
 	/* tzcntq is faster but avoid using it b/c it requires relatively newer archs */
 	uint64_t zcnt = (eq - 1) & (~eq & 0x5555);	/* subq, andnq, andq; chain length == 2 */
@@ -2639,7 +2729,7 @@ uint64_t dz_calc_max_qpos_core(dz_state_t const *ff)
 
 	/* loac column pointer */
 	dz_swgv_t const *col = dz_restore_column(pcap);
-	for(uint64_t p = pcap->range.spos; p < pcap->range.epos; p++) {
+	for(size_t p = pcap->range.spos; p < pcap->range.epos; p++) {
 		__m128i const v = _mm_load_si128(&col[p].s);
 		__m128i const s = dz_query_add_bonus(query, v, p);
 		print_vector(s);
@@ -3019,7 +3109,7 @@ void dz_trace_finalize_span(dz_alignment_t *aln, dz_path_span_t *span, dz_path_s
 	/* offset fixup */
 	span[0].offset = 0;
 	for(size_t i = 1; i < slen; i++) {
-		debug("i(%zu), plen(%zu), offset(%u, %u)", i, plen, span[i].offset, plen - span[i].offset);
+		debug("i(%zu), plen(%zu), offset(%u, %u)", i, plen, span[i].offset, (uint32_t)(plen - span[i].offset));
 		span[i].offset = plen - span[i].offset;
 	}
 	span[slen].offset = plen;
