@@ -1,20 +1,19 @@
 
-CC=gcc
-OFLAGS=-O3
-CFLAGS=$(OFLAGS) -std=c99 -Wall -Wno-unused-variable -Wno-unused-function -Wno-constant-conversion -march=native
+CC = gcc
+OFLAGS = -g
+CFLAGS = $(OFLAGS) -std=c99 -Wall -Wno-unused-variable -Wno-unused-function -Wno-constant-conversion -march=native
 
-all: example example.2bit example.protein
 
-example: example.c dozeu.h
-	$(CC) $(CFLAGS) -o example example.c
-example.2bit: example.2bit.c dozeu.h
-	$(CC) $(CFLAGS) -o example.2bit example.2bit.c
-example.protein: example.protein.c dozeu.h
-	$(CC) $(CFLAGS) -o example.protein example.protein.c
+SRCS = example.ascii.c example.2bit.c example.4bit.c example.protein.c
+TGTS = $(SRCS:.c=)
+
+all: $(TGTS)
+
+$(TGTS): $(SRCS) dozeu.h
+	$(CC) $(CFLAGS) -o $@ $@.c
 
 test: all
-	(./example && ./example.2bit && ./example.protein && echo "succeeded") || echo "failed"
+	(for t in $(TGTS); do ./$$t; done && echo "succeeded") || echo "failed"
 
 clean:
-	rm -f example example.2bit example.protein
-
+	rm -f $(TGTS)
