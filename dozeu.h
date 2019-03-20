@@ -2782,6 +2782,9 @@ uint64_t dz_calc_max_pos(dz_t *self, dz_forefront_t const *ff)
 	return(dz_calc_max_pos_core(dz_cstate(ff)));
 }
 
+
+#if defined(UNITTEST) && UNITTEST != 0
+
 unittest( "calc_max.small" ) {
 	struct dz_s *dz = dz_init(DZ_UNITTEST_SCORE_PARAMS);
 	ut_assert(dz != NULL);
@@ -2881,6 +2884,8 @@ unittest( "calc_max.null" ) {
 
 	dz_destroy(dz);
 }
+
+#endif
 
 
 /* traceback */
