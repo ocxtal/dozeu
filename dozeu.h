@@ -103,8 +103,10 @@ extern "C" {
 
 
 /* default encoding: ascii */
-#if !defined(DZ_PROTEIN) && !defined(DZ_NUCL_ASCII) && !defined(DZ_NUCL_2BIT) && !defined(DZ_NUCL_4BIT) && !defined(DZ_REALIGNER)
-#  define DZ_NUCL_ASCII
+#if !defined(DZ_WRAPPED_API) || (DZ_WRAPPED_API != 0)
+#  if !defined(DZ_PROTEIN) && !defined(DZ_NUCL_ASCII) && !defined(DZ_NUCL_2BIT) && !defined(DZ_NUCL_4BIT) && !defined(DZ_REALIGNER)
+#    define DZ_NUCL_ASCII
+#  endif
 #endif
 
 
@@ -224,7 +226,7 @@ typedef struct dz_alignment_s dz_alignment_t;
 
 
 
-#ifdef DZ_WRAPPED_API
+#if defined(DZ_WRAPPED_API) && (DZ_WRAPPED_API != 0)
 
 /* dz_t: wrapper context */
 typedef struct dz_s {
@@ -457,7 +459,7 @@ dz_trace_match_t dz_trace_get_match_ascii(int8_t const *score_matrix, dz_query_t
 	});
 }
 
-#ifdef DZ_WRAPPED_API
+#if defined(DZ_WRAPPED_API) && (DZ_WRAPPED_API != 0)
 static __dz_vectorize
 dz_state_t const *dz_extend_intl(dz_arena_t *mem, dz_profile_t const *profile, dz_query_t const *query, dz_state_t const **ff, size_t fcnt, char const *ref, size_t rlen, uint32_t dir)
 {
@@ -599,7 +601,7 @@ dz_trace_match_t dz_trace_get_match_2bit(int8_t const *score_matrix, dz_query_t 
 	});
 }
 
-#ifdef DZ_WRAPPED_API
+#if defined(DZ_WRAPPED_API) && (DZ_WRAPPED_API != 0)
 static __dz_vectorize
 dz_state_t const *dz_extend_intl(dz_arena_t *mem, dz_profile_t const *profile, dz_query_t const *query, dz_state_t const **ff, size_t fcnt, char const *ref, size_t rlen, uint32_t dir)
 {
@@ -760,7 +762,7 @@ dz_trace_match_t dz_trace_get_match_4bit(int8_t const *score_matrix, dz_query_t 
 	});
 }
 
-#ifdef DZ_WRAPPED_API
+#if defined(DZ_WRAPPED_API) && (DZ_WRAPPED_API != 0)
 static __dz_vectorize
 dz_state_t const *dz_extend_intl(dz_arena_t *mem, dz_profile_t const *profile, dz_query_t const *query, dz_state_t const **ff, size_t fcnt, char const *ref, size_t rlen, uint32_t dir)
 {
@@ -897,7 +899,7 @@ dz_trace_match_t dz_trace_get_match_protein(int8_t const *score_matrix, dz_query
 	});
 }
 
-#ifdef DZ_WRAPPED_API
+#if defined(DZ_WRAPPED_API) && (DZ_WRAPPED_API != 0)
 static __dz_vectorize
 dz_state_t const *dz_extend_intl(dz_arena_t *mem, dz_profile_t const *profile, dz_query_t const *query, dz_state_t const **ff, size_t fcnt, char const *ref, size_t rlen, uint32_t dir)
 {
@@ -1106,7 +1108,7 @@ dz_trace_match_t dz_trace_get_match_realigner(int8_t const *score_matrix, dz_que
 	});
 }
 
-#ifdef DZ_WRAPPED_API
+#if defined(DZ_WRAPPED_API) && (DZ_WRAPPED_API != 0)
 static __dz_vectorize
 dz_state_t const *dz_extend_intl(dz_arena_t *mem, dz_profile_t const *profile, dz_query_t const *query, dz_state_t const **ff, size_t fcnt, char const *ref, size_t rlen, uint32_t dir)
 {
@@ -1609,31 +1611,6 @@ dz_query_t *dz_pack_query_core(dz_arena_t *mem, dz_profile_t const *profile, uin
 }
 
 
-/* wrappers for compatibility */
-static __dz_vectorize
-dz_query_t *dz_pack_query(dz_t *self, char const *query, int64_t qlen)
-{
-	uint32_t const dir = qlen < 0;
-	char const *q  = dir ? &query[qlen] : query;
-	size_t const l = dir ? -qlen : qlen;
-	debug("q(%p), l(%zu), dir(%u)", q, l, dir);
-
-	return(dz_pack_query_intl(self, q, l, dir));	/* internally calls dz_pack_query_core */
-}
-
-static __dz_vectorize
-dz_query_t *dz_pack_query_forward(dz_t *self, char const *query, size_t qlen)
-{
-	return(dz_pack_query_intl(self, query, qlen, 0));
-}
-
-static __dz_vectorize
-dz_query_t *dz_pack_query_reverse(dz_t *self, char const *query, size_t qlen)
-{
-	return(dz_pack_query_intl(self, query, qlen, 1));
-}
-
-
 
 
 /*
@@ -1915,7 +1892,7 @@ typedef struct dz_tail_s {
 
 
 /* metadata handling */
-#ifdef DZ_WRAPPED_API
+#if defined(DZ_WRAPPED_API) && (DZ_WRAPPED_API != 0)
 
 static dz_tail_t const *dz_restore_tail(dz_state_t const *ff);
 
@@ -1952,10 +1929,12 @@ uint32_t dz_extract_id(dz_tail_t const *tail)
 }
 
 #else
+
+#define DZ_TAIL_MARGIN				( 0 )
 static __dz_vectorize
 uint32_t dz_extract_id(dz_tail_t const *tail)
 {
-	dz_meta_t const *p = dz_cmeta(tail + 1);
+	dz_unused(tail);
 	return(0);
 }
 
@@ -2763,6 +2742,7 @@ uint64_t dz_calc_max_qpos_core(dz_state_t const *ff)
 			__m128i const b = dz_query_get_bonus(query, p);
 			__m128i const s = _mm_add_epi16(v, b);
 		#else
+			dz_unused(query);
 			__m128i const s = v;
 		#endif
 
@@ -3187,7 +3167,7 @@ dz_alignment_t const *dz_trace_core(dz_arena_t *mem, dz_profile_t const *profile
 /*
  * wrapped APIs
  */
-#ifdef DZ_WRAPPED_API
+#if defined(DZ_WRAPPED_API) && (DZ_WRAPPED_API != 0)
 
 static __dz_vectorize
 dz_t *dz_initx(
@@ -3266,6 +3246,30 @@ void dz_flush(dz_t *self)
 {
 	dz_arena_flush(self->mem);
 	return;
+}
+
+/* packing query */
+static __dz_vectorize
+dz_query_t *dz_pack_query(dz_t *self, char const *query, int64_t qlen)
+{
+	uint32_t const dir = qlen < 0;
+	char const *q  = dir ? &query[qlen] : query;
+	size_t const l = dir ? -qlen : qlen;
+	debug("q(%p), l(%zu), dir(%u)", q, l, dir);
+
+	return(dz_pack_query_intl(self, q, l, dir));	/* internally calls dz_pack_query_core */
+}
+
+static __dz_vectorize
+dz_query_t *dz_pack_query_forward(dz_t *self, char const *query, size_t qlen)
+{
+	return(dz_pack_query_intl(self, query, qlen, 0));
+}
+
+static __dz_vectorize
+dz_query_t *dz_pack_query_reverse(dz_t *self, char const *query, size_t qlen)
+{
+	return(dz_pack_query_intl(self, query, qlen, 1));
 }
 
 /**
