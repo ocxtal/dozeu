@@ -386,9 +386,9 @@ typedef struct {
 static __dz_vectorize
 void dz_fill_fetcher_init_ascii(dz_fetcher_ascii_t *self, uint8_t const *ref, size_t rlen, uint32_t dir)
 {
-	self->p = &ref[dir ? rlen - 1 : 0];
-	self->t = &ref[dir ? -1 : rlen];
-	self->inc = dir ? -1 : 1;
+	self->p = &ref[dir ? rlen - 1ULL : 0];
+	self->t = &ref[dir ? (size_t)-1LL : rlen];
+	self->inc = dir ? -1LL : 1LL;
 	debug("ref(%p), rlen(%zu), p(%p), t(%p), dir(%u), inc(%ld)", ref, rlen, self->p, self->t, dir, self->inc);
 
 	static uint8_t const conv[16 * 2] __attribute__(( aligned(16) )) = {
@@ -545,9 +545,9 @@ typedef struct {
 static __dz_vectorize
 void dz_fill_fetcher_init_2bit(dz_fetcher_2bit_t *self, uint8_t const *ref, size_t rlen, uint32_t dir)
 {
-	self->p = &ref[dir ? rlen - 1 : 0];
-	self->t = &ref[dir ? -1 : rlen];
-	self->inc = dir ? -1 : 1;
+	self->p = &ref[dir ? rlen - 1ULL : 0];
+	self->t = &ref[dir ? (size_t)-1LL : rlen];
+	self->inc = dir ? -1LL : 1LL;
 	return;
 }
 
@@ -705,9 +705,9 @@ typedef struct {
 static __dz_vectorize
 void dz_fill_fetcher_init_4bit(dz_fetcher_4bit_t *self, uint8_t const *ref, size_t rlen, uint32_t dir)
 {
-	self->p = &ref[dir ? rlen - 1 : 0];
-	self->t = &ref[dir ? -1 : rlen];
-	self->inc  = dir ? -1 : 1;
+	self->p = &ref[dir ? rlen - 1ULL : 0];
+	self->t = &ref[dir ? (size_t)-1LL : rlen];
+	self->inc = dir ? -1LL : 1LL;
 	self->conv = dir ? 0xf7b3d591e6a2c480 : 0xfedcba9876543210;
 	return;
 }
@@ -841,9 +841,9 @@ typedef struct {
 static __dz_vectorize
 void dz_fill_fetcher_init_protein(dz_fetcher_protein_t *self, uint8_t const *ref, size_t rlen, uint32_t dir)
 {
-	self->p = &ref[dir ? rlen - 1 : 0];
-	self->t = &ref[dir ? -1 : rlen];
-	self->inc = dir ? -1 : 1;
+	self->p = &ref[dir ? rlen - 1ULL : 0];
+	self->t = &ref[dir ? (size_t)-1LL : rlen];
+	self->inc = dir ? -1LL : 1LL;
 	self->parr = NULL;
 	return;
 }
@@ -3688,27 +3688,27 @@ unittest( "calc_max.small" ) {
 	forefronts[0] = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AG", "\x0\x2", "\x1\x4", "MA"), 2, 1);
 	ut_assert(dz_calc_max_rpos(dz, forefronts[0]) == 2);
 	ut_assert(dz_calc_max_qpos(dz, forefronts[0]) == 2);
-	ut_assert(dz_calc_max_pos(dz, forefronts[0]) == ((2LL<<32) | 2LL));
+	ut_assert(dz_calc_max_pos(dz, forefronts[0]) == ((2ULL<<32) | 2ULL));
 
 	forefronts[1] = dz_extend(dz, q, &forefronts[0], 1, dz_ut_sel("C", "\x1", "\x2", "T"), 1, 2);
 	ut_assert(dz_calc_max_rpos(dz, forefronts[1]) == 1);
 	ut_assert(dz_calc_max_qpos(dz, forefronts[1]) == 3);
-	ut_assert(dz_calc_max_pos(dz, forefronts[1]) == ((1LL<<32) | 3LL));
+	ut_assert(dz_calc_max_pos(dz, forefronts[1]) == ((1ULL<<32) | 3ULL));
 
 	forefronts[2] = dz_extend(dz, q, &forefronts[0], 2, dz_ut_sel("TTTT", "\x3\x3\x3\x3", "\x8\x8\x8\x8", "LVQT"), 4, 3);
 	ut_assert(dz_calc_max_rpos(dz, forefronts[2]) == 4);
 	ut_assert(dz_calc_max_qpos(dz, forefronts[2]) == 7);
-	ut_assert(dz_calc_max_pos(dz, forefronts[2]) == ((4LL<<32) | 7LL));
+	ut_assert(dz_calc_max_pos(dz, forefronts[2]) == ((4ULL<<32) | 7ULL));
 
 	forefronts[3] = dz_extend(dz, q, &forefronts[2], 1, dz_ut_sel("CATG", "\x1\x0\x3\x2", "\x2\x1\x8\x4", "CKAM"), 4, 4);
 	ut_assert(dz_calc_max_rpos(dz, forefronts[3]) == 3);
 	ut_assert(dz_calc_max_qpos(dz, forefronts[3]) == 10);
-	ut_assert(dz_calc_max_pos(dz, forefronts[3]) == ((3LL<<32) | 10LL));
+	ut_assert(dz_calc_max_pos(dz, forefronts[3]) == ((3ULL<<32) | 10ULL));
 
 	forefronts[4] = dz_extend(dz, q, &forefronts[2], 2, dz_ut_sel("CTGA", "\x1\x3\x2\x0", "\x2\x8\x4\x1", "QLTL"), 4, 5);
 	ut_assert(dz_calc_max_rpos(dz, forefronts[4]) == 4);
 	ut_assert(dz_calc_max_qpos(dz, forefronts[4]) == 15);
-	ut_assert(dz_calc_max_pos(dz, forefronts[4]) == ((4LL<<32) | 15LL));
+	ut_assert(dz_calc_max_pos(dz, forefronts[4]) == ((4ULL<<32) | 15ULL));
 
 	dz_destroy(dz);
 }
@@ -3728,27 +3728,27 @@ unittest( "calc_max.small.revcomp" ) {
 	forefronts[0] = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel(&"CT"[2], &"\x1\x3"[2], &"\x2\x8"[2], &"AM"[2]), -2, 1);
 	ut_assert(dz_calc_max_rpos(dz, forefronts[0]) == -2, "%ld", dz_calc_max_rpos(dz, forefronts[0]));
 	ut_assert(dz_calc_max_qpos(dz, forefronts[0]) == 2);
-	ut_assert(dz_calc_max_pos(dz, forefronts[0]) == ((int64_t)(((uint64_t)-2LL)<<32) | 2LL));
+	ut_assert(dz_calc_max_pos(dz, forefronts[0]) == ((((uint64_t)-2LL)<<32) | 2LL));
 
 	forefronts[1] = dz_extend(dz, q, &forefronts[0], 1, dz_ut_sel(&"G"[1], &"\x2"[1], &"\x4"[1], &"T"[1]), -1, 2);
 	ut_assert(dz_calc_max_rpos(dz, forefronts[1]) == -1, "%ld", dz_calc_max_rpos(dz, forefronts[1]));
 	ut_assert(dz_calc_max_qpos(dz, forefronts[1]) == 3);
-	ut_assert(dz_calc_max_pos(dz, forefronts[1]) == ((int64_t)(((uint64_t)-1LL)<<32) | 3LL));
+	ut_assert(dz_calc_max_pos(dz, forefronts[1]) == ((((uint64_t)-1LL)<<32) | 3LL));
 
 	forefronts[2] = dz_extend(dz, q, &forefronts[0], 2, dz_ut_sel(&"AAAA"[4], &"\x0\x0\x0\x0"[4], &"\x1\x1\x1\x1"[4], &"TQVL"[4]), -4, 3);
 	ut_assert(dz_calc_max_rpos(dz, forefronts[2]) == -4, "%ld", dz_calc_max_rpos(dz, forefronts[2]));
 	ut_assert(dz_calc_max_qpos(dz, forefronts[2]) == 7);
-	ut_assert(dz_calc_max_pos(dz, forefronts[2]) == ((int64_t)(((uint64_t)-4LL)<<32) | 7LL));
+	ut_assert(dz_calc_max_pos(dz, forefronts[2]) == ((((uint64_t)-4LL)<<32) | 7LL));
 
 	forefronts[3] = dz_extend(dz, q, &forefronts[2], 1, dz_ut_sel(&"CATG"[4], &"\x1\x0\x3\x2"[4], &"\x2\x1\x8\x4"[4], &"MAKC"[4]), -4, 4);
 	ut_assert(dz_calc_max_rpos(dz, forefronts[3]) == -3, "%lu", dz_calc_max_rpos(dz, forefronts[3]));
 	ut_assert(dz_calc_max_qpos(dz, forefronts[3]) == 10);
-	ut_assert(dz_calc_max_pos(dz, forefronts[3]) == ((int64_t)(((uint64_t)-3LL)<<32) | 10LL));
+	ut_assert(dz_calc_max_pos(dz, forefronts[3]) == ((((uint64_t)-3LL)<<32) | 10LL));
 
 	forefronts[4] = dz_extend(dz, q, &forefronts[2], 2, dz_ut_sel(&"TCAG"[4], &"\x3\x1\x0\x2"[4], &"\x8\x2\x1\x4"[4], &"LTLQ"[4]), -4, 5);
 	ut_assert(dz_calc_max_rpos(dz, forefronts[4]) == -4);
 	ut_assert(dz_calc_max_qpos(dz, forefronts[4]) == 15);
-	ut_assert(dz_calc_max_pos(dz, forefronts[4]) == ((int64_t)(((uint64_t)-4LL)<<32) | 15LL));
+	ut_assert(dz_calc_max_pos(dz, forefronts[4]) == ((((uint64_t)-4LL)<<32) | 15LL));
 
 	dz_destroy(dz);
 }
