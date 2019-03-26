@@ -1578,7 +1578,7 @@ size_t dz_pack_query_reverse_core(dz_query_t *q, dz_profile_t const *profile, ui
 
 		/* continue the same conversion on the remainings */ {
 			char qbuf[16] = { 0 };
-			for(size_t i = blen; i < qlen - blen; i++) {
+			for(size_t i = 0; i < qlen - blen; i++) {
 				qbuf[i] = query[qlen - blen - 1 - i];
 				debug("i(%zu), c(%c, %u), c(%c, %u)", i, query[qlen - blen - 1 - i], query[qlen - blen - 1 - i], qbuf[i], qbuf[i]);
 			}
@@ -2341,7 +2341,7 @@ uint64_t dz_fill_column_body(dz_work_t *w, dz_fill_work_t *fw, dz_fetcher_t *fet
 
 		/* load score profile and update vectors */
 		__m128i const sc = fetcher->get_profile(fetcher->opaque, profile->matrix, query, p * DZ_L);
-		__m128i const bv = dz_query_get_bonus(query, p * DZ_L);
+		__m128i const bv = dz_query_get_bonus(query, p);
 		dz_fill_update_vector(w, fw, sc, bv);
 
 		/* save if at least one cell survived */
@@ -2361,6 +2361,7 @@ uint64_t dz_fill_column_body(dz_work_t *w, dz_fill_work_t *fw, dz_fetcher_t *fet
 		w->state.range.eblk = p;
 		return(1);
 	}
+	debug("range(%u, %u), blen(%u)", w->state.range.sblk, w->state.range.eblk, query->blen);
 	return(dz_fill_is_bottom(w, query));
 }
 
@@ -2373,7 +2374,7 @@ void dz_fill_column_tail(dz_work_t *w, dz_fill_work_t *fw, dz_fetcher_t *fetcher
 
 	/* update the last vector */
 	__m128i const sc = fetcher->get_profile(fetcher->opaque, profile->matrix, query, w->state.range.eblk * DZ_L);
-	__m128i const bv = dz_query_get_bonus(query, w->state.range.eblk * DZ_L);
+	__m128i const bv = dz_query_get_bonus(query, w->state.range.eblk);
 	dz_fill_update_vector(w, fw, sc, bv);
 
 	/* until all the cells drop */
@@ -2413,7 +2414,7 @@ dz_swgv_t *dz_fill_column(dz_work_t *w, dz_swgv_t *prev_col, dz_arena_t *mem, dz
 	dz_fill_work_init(w, &fw);
 
 	/* if reached the forefront of the query sequence, finish the extension */
-	if(dz_fill_column_body(w, &fw, fetcher, profile, query)) {
+	if(!dz_fill_column_body(w, &fw, fetcher, profile, query)) {
 		dz_fill_column_tail(w, &fw, fetcher, profile, query);
 	}
 
@@ -2788,10 +2789,16 @@ typedef struct dz_path_span_s {
 /* alignment object */
 /* typedef */
 struct dz_alignment_s {
+	int32_t score;
+	uint32_t unused;
+	uint32_t ref_length, query_length;
+
+	/* path */
 	dz_path_span_t const *span;
 	uint8_t const *path;
-	uint32_t span_length, path_length, ref_length, query_length;
-	int32_t rrem, score;
+	uint32_t span_length, path_length;
+
+	/* gap counts */
 	uint32_t mismatch_count, match_count, ins_count, del_count;
 } /* dz_alignment_t */;
 
@@ -3026,7 +3033,7 @@ uint64_t dz_trace_eat_del(dz_trace_work_t *w) {
 static __dz_vectorize
 void dz_trace_init_aln(dz_alignment_t *aln, dz_state_t const *ff, size_t idx)
 {
-	aln->rrem  = dz_calc_max_rpos_core(ff);
+	// aln->rrem  = dz_calc_max_rpos_core(ff);
 	aln->score = ff->max.score;
 	aln->query_length = idx;
 
@@ -3122,7 +3129,7 @@ dz_alignment_t const *dz_trace_finalize(dz_trace_work_t *w)
 	dz_trace_finalize_span(w->aln, w->span.ptr, w->span.base, w->aln->path_length);
 
 	/* save length */
-	w->aln->ref_length = w->rlen;
+	w->aln->ref_length = w->rlen - 1;
 
 	/* save match / gap counts */
 	w->aln->del_count = w->cnt[DZ_E_MATRIX];
@@ -3783,21 +3790,364 @@ unittest( "trace" ) {
 	ut_assert(dz != NULL);
 
 	dz_query_t *q = dz_pack_query(dz, dz_unittest_query, dz_unittest_query_length);
-	dz_forefront_t const *forefront = NULL;
+	dz_forefront_t const *forefronts[5] = { NULL };
 	dz_alignment_t const *aln = NULL;
 
-	forefront = dz_extend(dz, q, dz_root(dz), 1, "A", 1, 1);
-	aln = dz_trace(dz, forefront);
+	forefronts[0] = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AG", "\x0\x2", "\x1\x4", "MA"), 2, 1);
+	aln = dz_trace(dz, forefronts[0]);
 
-	forefront = dz_extend(dz, q, &forefront, 1, "GC", 2, 2);
-	aln = dz_trace(dz, forefront);
+	ut_assert(aln->score == dz_ut_sel(4, 4, 4, 9));
+	ut_assert(aln->ref_length   == 2);
+	ut_assert(aln->query_length == 2);
 
-	forefront = dz_extend(dz, q, &forefront, 1, "TTTT", 4, 3);
-	aln = dz_trace(dz, forefront);
+	ut_assert(aln->span != NULL);
+	ut_assert(aln->span_length    == 1);
+	ut_assert(aln->span[0].id     == 1);
+	ut_assert(aln->span[0].offset == 0);
+
+	ut_assert(aln->path != NULL);
+	ut_assert(aln->path_length    == 2);
+	ut_assert(strcmp((char const *)aln->path, "==") == 0);
+
+	ut_assert(aln->mismatch_count == 0);
+	ut_assert(aln->match_count    == 2);
+	ut_assert(aln->ins_count      == 0);
+	ut_assert(aln->del_count      == 0);
+
+
+
+	forefronts[1] = dz_extend(dz, q, &forefronts[0], 1, dz_ut_sel("C", "\x1", "\x2", "T"), 1, 2);
+	aln = dz_trace(dz, forefronts[1]);
+
+	ut_assert(aln->score == dz_ut_sel(6, 6, 6, 14));
+	ut_assert(aln->ref_length   == 3);
+	ut_assert(aln->query_length == 3);
+
+	ut_assert(aln->span != NULL);
+	ut_assert(aln->span_length    == 2);
+	ut_assert(aln->span[0].id     == 1);
+	ut_assert(aln->span[0].offset == 0);
+	ut_assert(aln->span[1].id     == 2);
+	ut_assert(aln->span[1].offset == 2);
+
+	ut_assert(aln->path != NULL);
+	ut_assert(aln->path_length    == 3);
+	ut_assert(strcmp((char const *)aln->path, "===") == 0);
+
+	ut_assert(aln->mismatch_count == 0);
+	ut_assert(aln->match_count    == 3);
+	ut_assert(aln->ins_count      == 0);
+	ut_assert(aln->del_count      == 0);
+
+
+
+	forefronts[2] = dz_extend(dz, q, &forefronts[0], 2, dz_ut_sel("TTTT", "\x3\x3\x3\x3", "\x8\x8\x8\x8", "LVQT"), 4, 3);
+	aln = dz_trace(dz, forefronts[2]);
+
+	ut_assert(aln->score == dz_ut_sel(14, 14, 14, 32));
+	ut_assert(aln->ref_length   == 7);
+	ut_assert(aln->query_length == 7);
+
+	ut_assert(aln->span != NULL);
+	ut_assert(aln->span_length    == 3);
+	ut_assert(aln->span[0].id     == 1);
+	ut_assert(aln->span[0].offset == 0);
+	ut_assert(aln->span[1].id     == 2);
+	ut_assert(aln->span[1].offset == 2);
+	ut_assert(aln->span[2].id     == 3);
+	ut_assert(aln->span[2].offset == 3);
+
+	ut_assert(aln->path != NULL);
+	ut_assert(aln->path_length    == 7);
+	ut_assert(strcmp((char const *)aln->path, "=======") == 0);
+
+	ut_assert(aln->mismatch_count == 0);
+	ut_assert(aln->match_count    == 7);
+	ut_assert(aln->ins_count      == 0);
+	ut_assert(aln->del_count      == 0);
+
+
+
+	forefronts[3] = dz_extend(dz, q, &forefronts[2], 1, dz_ut_sel("CATG", "\x1\x0\x3\x2", "\x2\x1\x8\x4", "GKAM"), 4, 4);
+	aln = dz_trace(dz, forefronts[3]);
+
+	ut_assert(aln->score == dz_ut_sel(20, 20, 20, 47));
+	ut_assert(aln->ref_length   == 10);
+	ut_assert(aln->query_length == 10);
+
+	ut_assert(aln->span != NULL);
+	ut_assert(aln->span_length    == 4);
+	ut_assert(aln->span[0].id     == 1);
+	ut_assert(aln->span[0].offset == 0);
+	ut_assert(aln->span[1].id     == 2);
+	ut_assert(aln->span[1].offset == 2);
+	ut_assert(aln->span[2].id     == 3);
+	ut_assert(aln->span[2].offset == 3);
+	ut_assert(aln->span[3].id     == 4);
+	ut_assert(aln->span[3].offset == 7);
+
+	ut_assert(aln->path != NULL);
+	ut_assert(aln->path_length    == 10);
+	ut_assert(strcmp((char const *)aln->path, "==========") == 0);
+
+	ut_assert(aln->mismatch_count == 0);
+	ut_assert(aln->match_count    == 10);
+	ut_assert(aln->ins_count      == 0);
+	ut_assert(aln->del_count      == 0);
+
+
+
+	forefronts[4] = dz_extend(dz, q, &forefronts[2], 2, dz_ut_sel("CTGA", "\x1\x3\x2\x0", "\x2\x8\x4\x1", "QLTL"), 4, 5);
+	aln = dz_trace(dz, forefronts[4]);
+
+	ut_assert(aln->score == dz_ut_sel(25, 25, 25, 64));
+	ut_assert(aln->ref_length   == 15);
+	ut_assert(aln->query_length == 15);
+
+	ut_assert(aln->span != NULL);
+	ut_assert(aln->span_length    == 5);
+	ut_assert(aln->span[0].id     == 1);
+	ut_assert(aln->span[0].offset == 0);
+	ut_assert(aln->span[1].id     == 2);
+	ut_assert(aln->span[1].offset == 2);
+	ut_assert(aln->span[2].id     == 3);
+	ut_assert(aln->span[2].offset == 3);
+	ut_assert(aln->span[3].id     == 4);
+	ut_assert(aln->span[3].offset == 7);
+	ut_assert(aln->span[4].id     == 5);
+	ut_assert(aln->span[4].offset == 11);
+
+	ut_assert(aln->path != NULL);
+	ut_assert(aln->path_length    == 15);
+	ut_assert(strcmp((char const *)aln->path, "==========X====") == 0);
+
+	ut_assert(aln->mismatch_count == 1);
+	ut_assert(aln->match_count    == 14);
+	ut_assert(aln->ins_count      == 0);
+	ut_assert(aln->del_count      == 0);
 
 	(void)aln;
 	dz_destroy(dz);
 }
+
+unittest( "trace.revcomp" ) {
+	dz_t *dz = dz_init(DZ_UNITTEST_SCORE_PARAMS);
+	ut_assert(dz != NULL);
+
+	dz_query_t *q = dz_pack_query(dz, dz_unittest_query, dz_unittest_query_length);
+	dz_forefront_t const *forefronts[5] = { NULL };
+	dz_alignment_t const *aln = NULL;
+
+	forefronts[0] = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel(&"CT"[2], &"\x1\x3"[2], &"\x2\x8"[2], &"AM"[2]), -2, 1);
+	aln = dz_trace(dz, forefronts[0]);
+
+	ut_assert(aln->score == dz_ut_sel(4, 4, 4, 9));
+	ut_assert(aln->ref_length   == 2);
+	ut_assert(aln->query_length == 2);
+
+	ut_assert(aln->span != NULL);
+	ut_assert(aln->span_length    == 1);
+	ut_assert(aln->span[0].id     == 1);
+	ut_assert(aln->span[0].offset == 0);
+
+	ut_assert(aln->path != NULL);
+	ut_assert(aln->path_length    == 2);
+	ut_assert(strcmp((char const *)aln->path, "==") == 0);
+
+	ut_assert(aln->mismatch_count == 0);
+	ut_assert(aln->match_count    == 2);
+	ut_assert(aln->ins_count      == 0);
+	ut_assert(aln->del_count      == 0);
+
+
+
+	forefronts[1] = dz_extend(dz, q, &forefronts[0], 1, dz_ut_sel(&"G"[1], &"\x2"[1], &"\x4"[1], &"T"[1]), -1, 2);
+	aln = dz_trace(dz, forefronts[1]);
+
+	ut_assert(aln->score == dz_ut_sel(6, 6, 6, 14));
+	ut_assert(aln->ref_length   == 3);
+	ut_assert(aln->query_length == 3);
+
+	ut_assert(aln->span != NULL);
+	ut_assert(aln->span_length    == 2);
+	ut_assert(aln->span[0].id     == 1);
+	ut_assert(aln->span[0].offset == 0);
+	ut_assert(aln->span[1].id     == 2);
+	ut_assert(aln->span[1].offset == 2);
+
+	ut_assert(aln->path != NULL);
+	ut_assert(aln->path_length    == 3);
+	ut_assert(strcmp((char const *)aln->path, "===") == 0);
+
+	ut_assert(aln->mismatch_count == 0);
+	ut_assert(aln->match_count    == 3);
+	ut_assert(aln->ins_count      == 0);
+	ut_assert(aln->del_count      == 0);
+
+
+
+	forefronts[2] = dz_extend(dz, q, &forefronts[0], 2, dz_ut_sel(&"AAAA"[4], &"\x0\x0\x0\x0"[4], &"\x1\x1\x1\x1"[4], &"TQVL"[4]), -4, 3);
+	aln = dz_trace(dz, forefronts[2]);
+
+	ut_assert(aln->score == dz_ut_sel(14, 14, 14, 32));
+	ut_assert(aln->ref_length   == 7);
+	ut_assert(aln->query_length == 7);
+
+	ut_assert(aln->span != NULL);
+	ut_assert(aln->span_length    == 3);
+	ut_assert(aln->span[0].id     == 1);
+	ut_assert(aln->span[0].offset == 0);
+	ut_assert(aln->span[1].id     == 2);
+	ut_assert(aln->span[1].offset == 2);
+	ut_assert(aln->span[2].id     == 3);
+	ut_assert(aln->span[2].offset == 3);
+
+	ut_assert(aln->path != NULL);
+	ut_assert(aln->path_length    == 7);
+	ut_assert(strcmp((char const *)aln->path, "=======") == 0);
+
+	ut_assert(aln->mismatch_count == 0);
+	ut_assert(aln->match_count    == 7);
+	ut_assert(aln->ins_count      == 0);
+	ut_assert(aln->del_count      == 0);
+
+
+
+	forefronts[3] = dz_extend(dz, q, &forefronts[2], 1, dz_ut_sel(&"CATG"[4], &"\x1\x0\x3\x2"[4], &"\x2\x1\x8\x4"[4], &"MAKG"[4]), -4, 4);
+	aln = dz_trace(dz, forefronts[3]);
+
+	ut_assert(aln->score == dz_ut_sel(20, 20, 20, 47));
+	ut_assert(aln->ref_length   == 10);
+	ut_assert(aln->query_length == 10);
+
+	ut_assert(aln->span != NULL);
+	ut_assert(aln->span_length    == 4);
+	ut_assert(aln->span[0].id     == 1);
+	ut_assert(aln->span[0].offset == 0);
+	ut_assert(aln->span[1].id     == 2);
+	ut_assert(aln->span[1].offset == 2);
+	ut_assert(aln->span[2].id     == 3);
+	ut_assert(aln->span[2].offset == 3);
+	ut_assert(aln->span[3].id     == 4);
+	ut_assert(aln->span[3].offset == 7);
+
+	ut_assert(aln->path != NULL);
+	ut_assert(aln->path_length    == 10);
+	ut_assert(strcmp((char const *)aln->path, "==========") == 0);
+
+	ut_assert(aln->mismatch_count == 0);
+	ut_assert(aln->match_count    == 10);
+	ut_assert(aln->ins_count      == 0);
+	ut_assert(aln->del_count      == 0);
+
+
+
+	forefronts[4] = dz_extend(dz, q, &forefronts[2], 2, dz_ut_sel(&"TCAG"[4], &"\x3\x1\x0\x2"[4], &"\x8\x2\x1\x4"[4], &"LTLQ"[4]), -4, 5);
+	aln = dz_trace(dz, forefronts[4]);
+
+	ut_assert(aln->score == dz_ut_sel(25, 25, 25, 64));
+	ut_assert(aln->ref_length   == 15);
+	ut_assert(aln->query_length == 15);
+
+	ut_assert(aln->span != NULL);
+	ut_assert(aln->span_length    == 5);
+	ut_assert(aln->span[0].id     == 1);
+	ut_assert(aln->span[0].offset == 0);
+	ut_assert(aln->span[1].id     == 2);
+	ut_assert(aln->span[1].offset == 2);
+	ut_assert(aln->span[2].id     == 3);
+	ut_assert(aln->span[2].offset == 3);
+	ut_assert(aln->span[3].id     == 4);
+	ut_assert(aln->span[3].offset == 7);
+	ut_assert(aln->span[4].id     == 5);
+	ut_assert(aln->span[4].offset == 11);
+
+	ut_assert(aln->path != NULL);
+	ut_assert(aln->path_length    == 15);
+	ut_assert(strcmp((char const *)aln->path, "==========X====") == 0);
+
+	ut_assert(aln->mismatch_count == 1);
+	ut_assert(aln->match_count    == 14);
+	ut_assert(aln->ins_count      == 0);
+	ut_assert(aln->del_count      == 0);
+
+	(void)aln;
+	dz_destroy(dz);
+}
+
+/* gap counts */
+unittest( "trace.gapcount" ) {
+	struct dz_s *dz = dz_init(dz_unittest_score_matrix, 5, 1, 20, 10);
+	ut_assert(dz != NULL);
+
+	char const *query = dz_ut_sel(
+		"ACACTTCTAGACTTTACCACTA",
+		"\x0\x1\x0\x1\x3\x3\x1\x3\x0\x2\x0\x1\x3\x3\x3\x0\x1\x1\x0\x1\x3\x0",
+		"\x1\x2\x1\x2\x8\x8\x2\x8\x1\x4\x1\x2\x8\x8\x8\x1\x2\x2\x1\x2\x8\x1",
+		"MSALLILALVGAAVAPLEDDDK"
+	);
+	struct dz_query_s const *q = dz_pack_query_forward(dz, query, 22);
+
+
+	struct dz_forefront_s const *ff[10] = { 0 };
+	ff[0] = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("ACAC", "\x0\x1\x0\x1", "\x1\x2\x1\x2", "MSAL"), 4, 0);
+
+	ff[1] = dz_extend(dz, q, &ff[0], 1, dz_ut_sel("TTGT", "\x3\x3\x2\x3", "\x8\x8\x4\x8", "LILA"), 4, 1);
+	ff[2] = dz_extend(dz, q, &ff[0], 1, dz_ut_sel("ATCC", "\x0\x3\x1\x1", "\x1\x8\x2\x2", "KKLG"), 4, 2);
+	ff[3] = dz_extend(dz, q, &ff[1], 2, dz_ut_sel("AGAC", "\x0\x2\x0\x1", "\x1\x4\x1\x2", "LVGA"), 4, 3);
+
+	ff[4] = dz_extend(dz, q, &ff[3], 1, dz_ut_sel("T", "\x3", "\x8", "A"), 1, 4);
+	ff[5] = dz_extend(dz, q, &ff[3], 2, dz_ut_sel("TTCTA", "\x3\x3\x1\x3\x0", "\x8\x8\x2\x8\x1", "AVAFP"), 5, 5);
+
+	ff[6] = dz_extend(dz, q, &ff[5], 1, dz_ut_sel("A", "\x0", "\x1", "A"), 1, 6);
+	ff[7] = dz_extend(dz, q, &ff[5], 1, dz_ut_sel("C", "\x1", "\x2", "E"), 1, 6);
+	ff[8] = dz_extend(dz, q, &ff[5], 1, dz_ut_sel("G", "\x2", "\x4", "M"), 1, 6);
+	ff[9] = dz_extend(dz, q, &ff[6], 3, dz_ut_sel("CACGG", "\x1\x0\x1\x2\x2", "\x2\x1\x2\x4\x4", "EDDCL"), 5, 9);
+
+	/* detect max */
+	struct dz_forefront_s const *max = NULL;
+	for(size_t i = 0; i < 10; i++) {
+		if(max == NULL || ff[i]->max > max->max) { max = ff[i]; }
+	}
+	ut_assert(max == ff[9]);
+
+	/* traceback */
+	struct dz_alignment_s const *aln = dz_trace(dz, max);
+	ut_assert(aln->ref_length   == dz_ut_sel(23, 23, 23, 23));
+	ut_assert(aln->query_length == dz_ut_sel(22, 22, 22, 22));
+	ut_assert(aln->score == dz_ut_sel(33, 33, 33, 88));
+	ut_assert(strcmp((char const *)aln->path, dz_ut_sel("======X=======I======XX", "======X=======I======XX", "======X=======I======XX", "===============I=X===XX")) == 0);
+
+	ut_assert(aln->path_length    == dz_ut_sel(23, 23, 23, 23));
+	ut_assert(aln->span_length    == 6);
+
+	ut_assert(aln->span[0].id     == 0);
+	ut_assert(aln->span[0].offset == 0);
+	ut_assert(strncmp((char const *)&aln->path[aln->span[0].offset], dz_ut_sel("====", "====", "====", "===="), 4) == 0);
+
+	ut_assert(aln->span[1].id     == 1);
+	ut_assert(aln->span[1].offset == 4);
+	ut_assert(strncmp((char const *)&aln->path[aln->span[1].offset], dz_ut_sel("==X=", "==X=", "==X=", "===="), 4) == 0);
+
+	ut_assert(aln->span[2].id     == 3);
+	ut_assert(aln->span[2].offset == 8);
+	ut_assert(strncmp((char const *)&aln->path[aln->span[2].offset], dz_ut_sel("====", "====", "====", "===="), 4) == 0);
+
+	ut_assert(aln->span[3].id     == 5);
+	ut_assert(aln->span[3].offset == 12);
+	ut_assert(strncmp((char const *)&aln->path[aln->span[3].offset], dz_ut_sel("==I==", "==I==", "==I==", "===I="), 5) == 0);
+
+	ut_assert(aln->span[4].id     == 6);
+	ut_assert(aln->span[4].offset == 17);
+	ut_assert(strncmp((char const *)&aln->path[aln->span[4].offset], dz_ut_sel("=", "=", "=", "X"), 1) == 0);
+
+	ut_assert(aln->span[5].id     == 9);
+	ut_assert(aln->span[5].offset == 18);
+	ut_assert(strncmp((char const *)&aln->path[aln->span[5].offset], dz_ut_sel("===XX", "===XX", "===XX", "===XX"), 5) == 0);
+
+	dz_destroy(dz);
+}
+
 
 #endif	/* defined(UNITTEST) && UNITTEST != 0 */
 #endif	/* DZ_WRAPPED_API */
