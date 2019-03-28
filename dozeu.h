@@ -3018,14 +3018,14 @@ uint64_t dz_trace_eat_ins(dz_trace_work_t *w) {
 	if(dz_likely(w->score != f)) { debug("test ins score unmatch, idx(%zu), score(%u), f(%u)", w->idx, w->score, f); return(0); }
 	debug("ins, score(%u), f(%u), idx(%zu)", w->score, f, w->idx);
 
-	do {
+	while(!dz_trace_test_idx(w, w->ccap, 2)) {		/* do not move to F matrix when gap longer than 2 is not possible */
 		uint16_t const x = dz_trace_score(DZ_F_MATRIX, w->ccap, w->idx - 1);
 		debug("ins, score(%u), x(%u), ie(%u), idx(%zu)", w->score, x, w->ie, w->idx);
 		if(w->score != x - w->ie) { break; }
 
 		dz_trace_push_op(w, DZ_F_MATRIX, x);
 		dz_trace_unwind_v(w, DZ_F_MATRIX);
-	} while(!dz_trace_test_idx(w, w->ccap, 2));
+	}
 
 	/* eat last column */
 	dz_trace_push_op(w, DZ_F_MATRIX, dz_trace_score(DZ_S_MATRIX, w->ccap, w->idx - 1));
