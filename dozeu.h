@@ -2983,7 +2983,7 @@ void dz_trace_push_op(dz_trace_work_t *w, uint64_t op, uint16_t next_score)
 	*--w->path.ptr = DZ_CIGAR_INTL>>(op<<3);
 	w->cnt[op]++;
 	w->score = next_score;
-	debug("score(%u), op(%c)", next_score, *w->path.ptr);
+	debug("score(%u), op(%c), idx(%zu)", next_score, *w->path.ptr, w->idx);
 	return;
 }
 
@@ -2997,7 +2997,7 @@ uint64_t dz_trace_eat_match(dz_trace_work_t *w, dz_profile_t const *profile, dz_
 	dz_trace_match_t m = get_match(profile->matrix, w->query, w->idx, w->rch);
 
 	/* skip if score does not match */
-	debug("test match, rch(%x), score(%d), match(%d, %u)", w->rch, w->score, m.score, m.match);
+	debug("test match, rch(%x), score(%u, %u), match(%d, %u)", w->rch, w->score, s + m.score - DZ_SCORE_OFS, m.score, m.match);
 	if(w->score != (uint16_t)(s + m.score - DZ_SCORE_OFS)) { return(0); }
 
 	/* determine match state */
@@ -3016,16 +3016,16 @@ uint64_t dz_trace_eat_ins(dz_trace_work_t *w) {
 	/* skip if score does not match */
 	uint16_t const f = dz_trace_score(DZ_F_MATRIX, w->ccap, w->idx);
 	if(dz_likely(w->score != f)) { debug("test ins score unmatch, idx(%zu), score(%u), f(%u)", w->idx, w->score, f); return(0); }
-	debug("ins, score(%u), f(%u)", w->score, f);
+	debug("ins, score(%u), f(%u), idx(%zu)", w->score, f, w->idx);
 
 	do {
 		uint16_t const x = dz_trace_score(DZ_F_MATRIX, w->ccap, w->idx - 1);
-		debug("ins, score(%u), x(%u), ie(%u)", w->score, x, w->ie);
+		debug("ins, score(%u), x(%u), ie(%u), idx(%zu)", w->score, x, w->ie, w->idx);
 		if(w->score != x - w->ie) { break; }
 
 		dz_trace_push_op(w, DZ_F_MATRIX, x);
 		dz_trace_unwind_v(w, DZ_F_MATRIX);
-	} while(!dz_trace_test_idx(w, w->ccap, 1));
+	} while(!dz_trace_test_idx(w, w->ccap, 2));
 
 	/* eat last column */
 	dz_trace_push_op(w, DZ_F_MATRIX, dz_trace_score(DZ_S_MATRIX, w->ccap, w->idx - 1));
