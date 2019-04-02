@@ -199,7 +199,8 @@ typedef struct dz_score_conf_s {
 	uint16_t full_length_bonus;		/* end-to-end mapping bonus; only activated when compiled with -DDZ_FULL_LENGTH_BONUS */
 
 	/* X-drop threshold */
-	size_t max_gap_len;				/* as X-drop threshold */
+	size_t max_ins_len;				/* as X-drop threshold */
+	size_t max_del_len;				/* as X-drop threshold */
 } dz_score_conf_t;
 
 /* external (custom) allocator for profile constructor */
@@ -1396,8 +1397,8 @@ struct dz_profile_s {
 	/* constants */
 	uint16_t xt, bonus, _pad, init;
 
-	uint32_t _pad2[2];
-	uint32_t max_gap_len;
+	uint32_t _pad2;
+	uint32_t max_ins_len, max_del_len;
 	uint32_t size;				/* object size for copying */
 
 	int8_t matrix[];
@@ -2565,11 +2566,12 @@ void dz_init_gap_penalties(dz_profile_t *profile, dz_score_conf_t const *conf)
 	/* X-drop threshold */
 	uint16_t const gi = dz_max2(conf->ins_open,   conf->del_open);
 	uint16_t const ge = dz_max2(conf->ins_extend, conf->del_extend);
-	profile->xt = gi + ge * conf->max_gap_len;	/* X-drop threshold */
+	profile->xt = gi + ge * dz_max2(conf->max_ins_len, conf->max_del_len);	/* FIXME: X-drop threshold */
 	profile->bonus = conf->full_length_bonus;
 	profile->init  = dz_add_ofs(DZ_CELL_MIN);
-	profile->max_gap_len = conf->max_gap_len;	/* save raw value */
-	debug("gi(%u), ge(%u), xdrop_threshold(%u), full_length_bonus(%u), max_gap_len(%u)", gi, ge, profile->xt, profile->bonus, profile->max_gap_len);
+	profile->max_ins_len = conf->max_ins_len;	/* save raw value */
+	profile->max_del_len = conf->max_del_len;	/* save raw value */
+	debug("gi(%u), ge(%u), xdrop_threshold(%u), full_length_bonus(%u), max_gap_len(%u, %u)", gi, ge, profile->xt, profile->bonus, profile->max_ins_len, profile->max_del_len);
 
 	return;
 }
@@ -2663,8 +2665,8 @@ static __dz_vectorize
 void dz_init_root(dz_profile_t *profile, dz_score_conf_t const *conf, dz_allocator_t *alloc)
 {
 	/* calc vector length; query = NULL for the first (root) column */
-	size_t const max_gap_len = dz_roundup(conf->max_gap_len, DZ_L);
-	size_t const blen = max_gap_len / DZ_L;
+	size_t const max_ins_len = dz_roundup(conf->max_ins_len, DZ_L);
+	size_t const blen = max_ins_len / DZ_L;
 
 	/* fill root head */
 	dz_head_t *head = dz_slice_root_head(alloc, blen);
@@ -3211,7 +3213,8 @@ dz_t *dz_initx(
 	uint16_t ins_extend,
 	uint16_t del_open,
 	uint16_t del_extend,
-	uint64_t max_gap_len,
+	uint64_t max_ins_len,
+	uint64_t max_del_len,
 	uint16_t full_length_bonus)
 {
 	dz_arena_t *mem = dz_arena_init(DZ_MEM_INIT_SIZE);
@@ -3237,7 +3240,8 @@ dz_t *dz_initx(
 	conf.del_extend   = del_extend;
 	conf.scan_ref     = 0;
 	conf.full_length_bonus = full_length_bonus;
-	conf.max_gap_len  = max_gap_len;
+	conf.max_ins_len  = max_ins_len;
+	conf.max_del_len  = max_del_len;
 
 	self->profile = dz_init_profile(&alloc, &conf);
 	return(self);
@@ -3250,7 +3254,7 @@ dz_t *dz_init(int8_t const *score_matrix, uint16_t gap_open, uint16_t gap_extend
 	return(dz_initx(score_matrix,
 		gap_open, gap_extend,
 		gap_open, gap_extend,
-		max_gap_len,
+		max_gap_len, max_gap_len,
 		full_length_bonus
 	));
 }
@@ -3261,7 +3265,7 @@ dz_t *dz_init(int8_t const *score_matrix, uint16_t gap_open, uint16_t gap_extend
 	return(dz_initx(score_matrix,
 		gap_open, gap_extend,
 		gap_open, gap_extend,
-		max_gap_len, 0
+		max_gap_len, max_gap_len, 0
 	));
 }
 #endif		/* DZ_FULL_LENGTH_BONUS */
