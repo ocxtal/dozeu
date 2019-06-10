@@ -1748,6 +1748,7 @@ dz_static_assert(offsetof(dz_forefront_t, max)   == offsetof(dz_state_t, max.sco
 
 
 /* merge incoming vectors; using SIMD max to avoid test-and-branch */
+#if 0
 typedef struct {
 	__m128i range_cnt;	/* dz_range_t and dz_ref_cnt_t pair on xmm */
 	__m128i max;		/* dz_max_t on xmm */
@@ -1806,6 +1807,44 @@ dz_state_t dz_merge_state(dz_state_t const **ff, size_t fcnt)
 	);
 	return(state);
 }
+#else
+static __dz_vectorize
+dz_state_t dz_merge_state(dz_state_t const **ff, size_t fcnt)
+{
+	/* load constant */
+	static int32_t const neg[4] __attribute__(( aligned(16) )) = { -1, 0, 0, 0 };	/* negate spos to take min */
+	__m128i const nv = _mm_load_si128((__m128i const *)neg);
+
+	/* working registers */
+	__m128i mv0 = nv;
+	__m128i mv1 = _mm_setzero_si128();
+
+	for(size_t i = 0; i < fcnt; i++) {
+		/* sblk, eblk, ccnt, scnt */
+		__m128i const v0 = _mm_loadu_si128((__m128i const *)&ff[i]->range.sblk);
+		mv0 = _mm_max_epu32(mv0, _mm_xor_si128(v0, nv));
+
+		/* max */
+		__m128i const v1 = _mm_loadu_si128((__m128i const *)&ff[i]->max.score);
+		mv1 = _mm_max_epu32(mv1, v1);
+
+		debug("i(%zu), fcnt(%zu), ff(%p), range(%u, %u), ccnt(%u), scnt(%u), max(%d), inc(%d)",
+			i, fcnt, ff[i], ff[i]->range.sblk, ff[i]->range.eblk, ff[i]->cnt.column, ff[i]->cnt.section, ff[i]->max.score, ff[i]->max.inc
+		);
+	}
+
+	/* save */
+	dz_state_t state __attribute__(( aligned(16) ));
+	_mm_store_si128((__m128i *)&state.range.sblk, _mm_xor_si128(mv0, nv));	/* (eblk, sblk, section, column) */
+	_mm_store_si128((__m128i *)&state.max.score,  _mm_and_si128(mv1, nv));	/* (cap = NULL, inc = 0, score) */
+	state.max.inc = dz_add_ofs(0);
+
+	debug("merged state, range(%u, %u), ccnt(%u), scnt(%u), max(%d), inc(%d)",
+		state.range.sblk, state.range.eblk, state.cnt.column, state.cnt.section, state.max.score, state.max.inc
+	);
+	return(state);
+}
+#endif
 
 static __dz_vectorize
 void dz_fixup_state(dz_state_t *state, dz_query_t const *query)
