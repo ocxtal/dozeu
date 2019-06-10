@@ -1,7 +1,7 @@
 
 // $(CC) -O3 -march=native -DMAIN -o dozeu dozeu.c
-// #define DEBUG
-// #define DZ_PRINT_VECTOR
+#define DEBUG
+#define DZ_PRINT_VECTOR
 
 /* print_vector for debugging */
 #ifdef DZ_PRINT_VECTOR
@@ -2135,7 +2135,7 @@ dz_swgv_t const *dz_restore_tail_column(dz_state_t const *ff)
 
 /* internal link (ilink) */
 static __dz_vectorize
-dz_swgv_t *dz_slice_ilink(dz_work_t *w, dz_cap_t const *prev_cap, uint8_t *ptr)
+dz_swgv_t *dz_slice_ilink(dz_cap_t const *prev_cap, uint8_t *ptr)
 {
 	/* save link */
 	dz_state_t const **ff = ((dz_state_t const **)ptr) + 2;
@@ -2147,7 +2147,7 @@ dz_swgv_t *dz_slice_ilink(dz_work_t *w, dz_cap_t const *prev_cap, uint8_t *ptr)
 	head->zero  = 0;
 
 	/* overlaps with dz_col_tracker_t */
-	head->magic = w->tracker.ch;
+	head->magic = DZ_HEAD_RCH; // w->tracker.ch;
 	head->zero2 = 0;
 	head->fcnt  = 1;		/* #incoming vectors == 1 */
 	return(dz_swgv(head + 1));
@@ -2156,7 +2156,7 @@ dz_swgv_t *dz_slice_ilink(dz_work_t *w, dz_cap_t const *prev_cap, uint8_t *ptr)
 static __dz_vectorize
 uint64_t dz_is_ilink(dz_cap_t const *cap)
 {
-	return((cap->tracker.ch & DZ_HEAD_RCH) == 0);
+	return((cap->tracker.ch & DZ_HEAD_RCH) != 0);
 }
 
 static __dz_vectorize
@@ -2187,7 +2187,7 @@ dz_swgv_t *dz_slice_cap_core(dz_work_t *w, dz_swgv_t *prev_col, dz_arena_t *mem)
 	if(dz_likely(dz_cap(ptr) == cap + 1)) { return(dz_swgv(cap + 1)); }
 
 	/* new stack allocated */
-	return(dz_slice_ilink(w, cap, ptr));
+	return(dz_slice_ilink(cap, ptr));
 }
 
 static __dz_vectorize
@@ -3005,7 +3005,7 @@ uint64_t dz_trace_rewind_merge(dz_trace_work_t *w, size_t layer)
 	/* merging vector; load contents to find an edge */
 	dz_head_t const *head = dz_chead(w->pcap);
 	int32_t const prev_score = dz_trace_score(layer, w->ccap, w->idx) + head->base;
-	debug("head(%p), prev_score(%u)", head, prev_score);
+	debug("head(%p), prev_score(%u)", head, dz_rm_ofs(prev_score));
 
 	/* load incoming vectors */
 	size_t const vidx = dz_trace_vector_idx(w->idx);
@@ -3020,7 +3020,7 @@ uint64_t dz_trace_rewind_merge(dz_trace_work_t *w, size_t layer)
 
 		/* adj[i] = w.max - (ffs[i]->max - ffs[i]->inc); base = max - inc */
 		int32_t const score = dz_trace_merge_score(ff, w->idx, layer);
-		debug("score(%u), prev_score(%u)", score, prev_score);
+		debug("score(%u), prev_score(%u)", dz_rm_ofs(score), dz_rm_ofs(prev_score));
 		if(prev_score == score) {
 			w->pcap = dz_ccap(dz_restore_tail(ff));
 			return(1);
@@ -3053,7 +3053,7 @@ uint64_t dz_trace_unwind_h(dz_trace_work_t *w, size_t layer)
 {
 	debug("pcap(%p), cap(%p)", w->pcap, w->ccap);
 	while(1) {
-		w->ccap  = w->pcap;
+		w->ccap = w->pcap;
 		w->pcap = dz_unwind_cap(w->ccap);
 		debug("pcap(%p), cap(%p), is_head(%u), is_root(%u)", w->pcap, w->ccap, (uint32_t)dz_is_head(w->pcap), (uint32_t)dz_is_root(w->pcap));
 
@@ -3103,21 +3103,21 @@ void dz_trace_push_op(dz_trace_work_t *w, uint64_t op, uint16_t next_score)
 	*--w->path.ptr = DZ_CIGAR_INTL>>(op<<3);
 	w->cnt[op]++;
 	w->score = next_score;
-	debug("score(%u), op(%c), idx(%zu)", next_score, *w->path.ptr, w->idx);
+	debug("score(%u), op(%c), idx(%zu)", dz_rm_ofs(next_score), *w->path.ptr, w->idx);
 	return;
 }
 
 
 static __dz_vectorize
 uint64_t dz_trace_eat_match(dz_trace_work_t *w, dz_profile_t const *profile, dz_trace_get_match_t get_match) {
-	if(dz_trace_test_idx(w, w->pcap, 1)) { debug("test match out of range, idx(%zu)", w->idx); return(0); }
+	if(dz_trace_test_idx(w, w->pcap, 1)) { debug("test match out of range, idx(%zu), range(%u, %u)", w->idx, w->pcap->range.sblk, w->pcap->range.eblk); return(0); }
 
 	/* get diagonal score for this cell */
 	uint16_t const s = dz_trace_score(DZ_S_MATRIX, w->pcap, w->idx - 1);
 	dz_trace_match_t m = get_match(profile->matrix, w->query, w->idx, w->rch);
 
 	/* skip if score does not match */
-	debug("test match, rch(%x), adj_score(%u, %u), match(%d, %u)", w->rch, dz_trace_score_adj(w), s + m.score - DZ_SCORE_OFS, m.score, m.match);
+	debug("test match, rch(%x), adj_score(%u, %u), match(%d, %u)", w->rch, dz_rm_ofs(dz_trace_score_adj(w)), dz_rm_ofs(s + m.score - DZ_SCORE_OFS), m.score, m.match);
 	if(dz_trace_score_adj(w) != (uint16_t)(s + m.score - DZ_SCORE_OFS)) { return(0); }
 
 	/* determine match state; compensate adj before saving */
@@ -3131,16 +3131,16 @@ uint64_t dz_trace_eat_match(dz_trace_work_t *w, dz_profile_t const *profile, dz_
 
 static __dz_vectorize
 uint64_t dz_trace_eat_ins(dz_trace_work_t *w) {
-	if(dz_trace_test_idx(w, w->ccap, 1)) { debug("test ins out of range, idx(%zu)", w->idx); return(0); }
+	if(dz_trace_test_idx(w, w->ccap, 1)) { debug("test ins out of range, idx(%zu), range(%u, %u)", w->idx, w->ccap->range.sblk, w->ccap->range.eblk); return(0); }
 
 	/* skip if score does not match */
 	uint16_t const f = dz_trace_score(DZ_F_MATRIX, w->ccap, w->idx);
-	if(dz_likely(dz_trace_score_raw(w) != f)) { debug("test ins score unmatch, idx(%zu), raw_score(%u), f(%u)", w->idx, dz_trace_score_raw(w), f); return(0); }
-	debug("ins, raw_score(%u), f(%u), idx(%zu)", dz_trace_score_raw(w), f, w->idx);
+	if(dz_likely(dz_trace_score_raw(w) != f)) { debug("test ins score unmatch, idx(%zu), raw_score(%u), f(%u)", w->idx, dz_rm_ofs(dz_trace_score_raw(w)), f); return(0); }
+	debug("ins, raw_score(%u), f(%u), idx(%zu)", dz_rm_ofs(dz_trace_score_raw(w)), f, w->idx);
 
 	while(!dz_trace_test_idx(w, w->ccap, 2)) {		/* do not move to F matrix when gap longer than 2 is not possible */
 		uint16_t const x = dz_trace_score(DZ_F_MATRIX, w->ccap, w->idx - 1);
-		debug("ins, raw_score(%u), x(%u), ie(%u), idx(%zu)", dz_trace_score_raw(w), x, w->ie, w->idx);
+		debug("ins, raw_score(%u), x(%u), ie(%u), idx(%zu)", dz_rm_ofs(dz_trace_score_raw(w)), x, w->ie, w->idx);
 		if(dz_trace_score_raw(w) != x - w->ie) { break; }
 
 		dz_trace_push_op(w, DZ_F_MATRIX, x);
@@ -3155,17 +3155,17 @@ uint64_t dz_trace_eat_ins(dz_trace_work_t *w) {
 
 static __dz_vectorize
 uint64_t dz_trace_eat_del(dz_trace_work_t *w) {
-	if(dz_trace_test_idx(w, w->pcap, 0)) { debug("test del out of range, idx(%zu)", w->idx); return(0); }
+	if(dz_trace_test_idx(w, w->pcap, 0)) { debug("test del out of range, idx(%zu), range(%u, %u)", w->idx, w->pcap->range.sblk, w->pcap->range.eblk); return(0); }
 
 	/* skip if score does not match */
 	uint16_t const e = dz_trace_score(DZ_E_MATRIX, w->ccap, w->idx);
-	if(dz_likely(dz_trace_score_raw(w) != e)) { debug("test del score unmatch, idx(%zu), raw_score(%u), e(%u)", w->idx, dz_trace_score_raw(w), e); return(0); }
-	debug("del, raw_score(%u), f(%u)", dz_trace_score_raw(w), e);
+	if(dz_likely(dz_trace_score_raw(w) != e)) { debug("test del score unmatch, idx(%zu), raw_score(%u), e(%u)", w->idx, dz_rm_ofs(dz_trace_score_raw(w)), e); return(0); }
+	debug("del, raw_score(%u), f(%u)", dz_rm_ofs(dz_trace_score_raw(w)), e);
 
 	do {
 		uint16_t const x = dz_trace_score(DZ_E_MATRIX, w->pcap, w->idx);
 		if(dz_trace_score_adj(w) != x - w->de) { break; }
-		debug("del, adj_score(%u), x(%u), de(%u)", dz_trace_score_adj(w), x, w->de);
+		debug("del, adj_score(%u), x(%u), de(%u)", dz_rm_ofs(dz_trace_score_adj(w)), x, w->de);
 
 		dz_trace_push_op(w, DZ_E_MATRIX, x);
 		dz_trace_unwind_h(w, DZ_E_MATRIX);
@@ -4265,36 +4265,36 @@ unittest( "trace.gapcount" ) {
 
 	/* traceback */
 	struct dz_alignment_s const *aln = dz_trace(dz, max);
-	ut_assert(aln->ref_length   == dz_ut_sel(23, 23, 23, 23));
-	ut_assert(aln->query_length == dz_ut_sel(22, 22, 22, 22));
+	ut_assert(aln->ref_length     == dz_ut_sel(23, 23, 23, 23), "%u", aln->ref_length);
+	ut_assert(aln->query_length   == dz_ut_sel(22, 22, 22, 22), "%u", aln->query_length);
 	ut_assert(aln->score == dz_ut_sel(33, 33, 33, 88));
-	ut_assert(strcmp((char const *)aln->path, dz_ut_sel("======X=======I======XX", "======X=======I======XX", "======X=======I======XX", "===============I=X===XX")) == 0);
+	ut_assert(strcmp((char const *)aln->path, dz_ut_sel("======X=======I======XX", "======X=======I======XX", "======X=======I======XX", "===============I=X===XX")) == 0, "%s", aln->path);
 
-	ut_assert(aln->path_length    == dz_ut_sel(23, 23, 23, 23));
-	ut_assert(aln->span_length    == 6);
+	ut_assert(aln->path_length    == dz_ut_sel(23, 23, 23, 23), "%u", aln->path_length);
+	ut_assert(aln->span_length    == 6, "%u", aln->span_length);
 
-	ut_assert(aln->span[0].id     == 0);
-	ut_assert(aln->span[0].offset == 0);
+	ut_assert(aln->span[0].id     == 0, "%u", aln->span[0].id);
+	ut_assert(aln->span[0].offset == 0, "%u", aln->span[0].offset);
 	ut_assert(strncmp((char const *)&aln->path[aln->span[0].offset], dz_ut_sel("====", "====", "====", "===="), 4) == 0);
 
-	ut_assert(aln->span[1].id     == 1);
-	ut_assert(aln->span[1].offset == 4);
+	ut_assert(aln->span[1].id     == 1, "%u", aln->span[1].id);
+	ut_assert(aln->span[1].offset == 4, "%u", aln->span[1].offset);
 	ut_assert(strncmp((char const *)&aln->path[aln->span[1].offset], dz_ut_sel("==X=", "==X=", "==X=", "===="), 4) == 0);
 
-	ut_assert(aln->span[2].id     == 3);
-	ut_assert(aln->span[2].offset == 8);
+	ut_assert(aln->span[2].id     == 3, "%u", aln->span[2].id);
+	ut_assert(aln->span[2].offset == 8, "%u", aln->span[2].offset);
 	ut_assert(strncmp((char const *)&aln->path[aln->span[2].offset], dz_ut_sel("====", "====", "====", "===="), 4) == 0);
 
-	ut_assert(aln->span[3].id     == 5);
-	ut_assert(aln->span[3].offset == 12);
+	ut_assert(aln->span[3].id     == 5, "%u", aln->span[3].id);
+	ut_assert(aln->span[3].offset == 12, "%u", aln->span[3].offset);
 	ut_assert(strncmp((char const *)&aln->path[aln->span[3].offset], dz_ut_sel("==I==", "==I==", "==I==", "===I="), 5) == 0);
 
-	ut_assert(aln->span[4].id     == 6);
-	ut_assert(aln->span[4].offset == 17);
+	ut_assert(aln->span[4].id     == 6, "%u", aln->span[4].id);
+	ut_assert(aln->span[4].offset == 17, "%u", aln->span[4].offset);
 	ut_assert(strncmp((char const *)&aln->path[aln->span[4].offset], dz_ut_sel("=", "=", "=", "X"), 1) == 0);
 
-	ut_assert(aln->span[5].id     == 9);
-	ut_assert(aln->span[5].offset == 18);
+	ut_assert(aln->span[5].id     == 9, "%u", aln->span[5].id);
+	ut_assert(aln->span[5].offset == 18, "%u", aln->span[5].offset);
 	ut_assert(strncmp((char const *)&aln->path[aln->span[5].offset], dz_ut_sel("===XX", "===XX", "===XX", "===XX"), 5) == 0);
 
 	dz_destroy(dz);
@@ -4317,30 +4317,97 @@ uint8_t dz_unittest_random_char(void)
 	#endif
 }
 
+typedef struct {
+	char *seq;
+	size_t len;
+} dz_unittest_seq_t;
+
+static __dz_force_inline
+dz_unittest_seq_t dz_unittest_rand_seq(size_t len)
+{
+	char *seq = malloc(sizeof(char) * (len + 1));
+	for(size_t i = 0; i < len; i++) {
+		seq[i] = dz_unittest_random_char();
+	}
+	seq[len] = '\0';
+
+	return((dz_unittest_seq_t){
+		.seq = seq,
+		.len = len
+	});}
+
+static __dz_force_inline
+dz_unittest_seq_t dz_unittest_mod_seq(char const *seq, size_t len)
+{
+	char *mod = malloc(sizeof(char) * (4 * len + 1024));
+	size_t j = 0;
+	for(size_t i = 0; i < len; i++) {
+		switch(rand() % 20) {
+			case 0: break;	/* del */
+			case 1:			/* ins */
+				mod[j++] = dz_unittest_random_char();
+				mod[j++] = seq[i];
+				break;
+			// case 2:
+				// mod[j++] = dz_unittest_random_char();
+				// break;
+			default:
+				mod[j++] = seq[i];
+				break;
+		}
+	}
+	mod[j] = '\0';
+	return((dz_unittest_seq_t){
+		.seq = mod,
+		.len = j
+	});
+}
+
+
 unittest( "adj" ) {
 	struct dz_s *dz = dz_init(DZ_UNITTEST_SCORE_PARAMS);
 	ut_assert(dz != NULL);
 
 	size_t const len = 16384;
-	char *query = malloc(sizeof(char) * (len + 1));
-	for(size_t i = 0; i < len; i++) {
-		query[i] = dz_unittest_random_char();
-	}
-	query[len] = '\0';
-
-	struct dz_query_s const *q = dz_pack_query_forward(dz, query, len);
+	dz_unittest_seq_t query = dz_unittest_rand_seq(len);
+	struct dz_query_s const *q = dz_pack_query_forward(dz, query.seq, query.len);
 	ut_assert(q != NULL);
 
-	struct dz_forefront_s const *ff = dz_extend(dz, q, dz_root(dz), 1, query, len, 0);
+	struct dz_forefront_s const *ff = dz_extend(dz, q, dz_root(dz), 1, query.seq, query.len, 0);
 	ut_assert(ff != NULL);
 	#ifndef DZ_PROTEIN
 		/* FIXME: accumulate score for protein */
-		ut_assert(ff->max == (int32_t)(dz_unittest_score_matrix[0] * len));
+		ut_assert(ff->max == (int32_t)(dz_unittest_score_matrix[0] * query.len));
 	#endif
 
 	struct dz_alignment_s const *aln = dz_trace(dz, ff);
 	ut_assert(aln != NULL);
 
+	free(query.seq);
+	dz_destroy(dz);
+}
+
+unittest( "adj.gaps" ) {
+	struct dz_s *dz = dz_init(DZ_UNITTEST_SCORE_PARAMS);
+	ut_assert(dz != NULL);
+
+	for(size_t i = 0; i < 16; i++) {
+		size_t const len = 16384;
+		dz_unittest_seq_t query = dz_unittest_rand_seq(len);
+		struct dz_query_s const *q = dz_pack_query_forward(dz, query.seq, query.len);
+		ut_assert(q != NULL);
+
+		dz_unittest_seq_t ref = dz_unittest_mod_seq(query.seq, query.len);
+		struct dz_forefront_s const *ff = dz_extend(dz, q, dz_root(dz), 1, ref.seq, ref.len, 0);
+		ut_assert(ff != NULL);
+		/* we don't exactly know how large the score is */
+
+		struct dz_alignment_s const *aln = dz_trace(dz, ff);
+		ut_assert(aln != NULL);		/* we only expect the trace back is done without failure */
+
+		free(query.seq);
+		free(ref.seq);
+	}
 	dz_destroy(dz);
 }
 
