@@ -2699,13 +2699,13 @@ dz_profile_t *dz_init_profile(dz_allocator_t *alloc, dz_score_conf_t const *conf
 }
 
 static __dz_vectorize
-void dz_destroy_profile(dz_destructor_t *free, dz_profile_t *profile)
+void dz_destroy_profile(dz_destructor_t *dtor, dz_profile_t *profile)
 {
 	dz_tail_t const *tail = dz_restore_tail(dz_cstate(profile->root));
 	dz_cap_t const *head = dz_unwind_cap(dz_ccap(tail));
 
-	free->fp(free->ctx, (void *)head);
-	free->fp(free->ctx, profile);
+	dtor->fp(dtor->ctx, (void *)head);
+	dtor->fp(dtor->ctx, profile);
 	return;
 }
 
