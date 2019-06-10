@@ -2552,16 +2552,16 @@ static __dz_vectorize
 void dz_init_gap_penalties(dz_profile_t *profile, dz_score_conf_t const *conf)
 {
 	/* insertion penalties */
-	__m128i const iiv = _mm_set1_epi16(conf->ins_open);
-	__m128i const iev = _mm_set1_epi16(conf->ins_extend);
-	_mm_store_si128((__m128i *)profile->iiv, iiv);
-	_mm_store_si128((__m128i *)profile->iev, iev);
+	__m128i const ii = _mm_set1_epi16(conf->ins_open);
+	__m128i const ie = _mm_set1_epi16(conf->ins_extend);
+	_mm_store_si128((__m128i *)profile->iiv, ii);
+	_mm_store_si128((__m128i *)profile->iev, ie);
 
 	/* deletion penalties */
-	__m128i const div = _mm_set1_epi16(conf->del_open);
-	__m128i const dev = _mm_set1_epi16(conf->del_extend);
-	_mm_store_si128((__m128i *)profile->div, div);
-	_mm_store_si128((__m128i *)profile->dev, dev);
+	__m128i const di = _mm_set1_epi16(conf->del_open);
+	__m128i const de = _mm_set1_epi16(conf->del_extend);
+	_mm_store_si128((__m128i *)profile->div, di);
+	_mm_store_si128((__m128i *)profile->dev, de);
 
 	/* X-drop threshold */
 	uint16_t const gi = dz_max2(conf->ins_open,   conf->del_open);
