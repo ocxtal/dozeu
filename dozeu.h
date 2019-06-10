@@ -1,7 +1,7 @@
 
 // $(CC) -O3 -march=native -DMAIN -o dozeu dozeu.c
-#define DEBUG
-#define DZ_PRINT_VECTOR
+// #define DEBUG
+// #define DZ_PRINT_VECTOR
 
 /* print_vector for debugging */
 #ifdef DZ_PRINT_VECTOR
@@ -2186,7 +2186,7 @@ dz_swgv_t *dz_slice_ilink(dz_cap_t const *prev_cap, uint8_t *ptr)
 	head->zero  = 0;
 
 	/* overlaps with dz_col_tracker_t */
-	head->magic = DZ_HEAD_RCH; // w->tracker.ch;
+	head->magic = DZ_HEAD_RCH + 1;	/* to make the value different from head */
 	head->zero2 = 0;
 	head->fcnt  = 1;		/* #incoming vectors == 1 */
 	return(dz_swgv(head + 1));
@@ -2195,7 +2195,7 @@ dz_swgv_t *dz_slice_ilink(dz_cap_t const *prev_cap, uint8_t *ptr)
 static __dz_vectorize
 uint64_t dz_is_ilink(dz_cap_t const *cap)
 {
-	return((cap->tracker.ch & DZ_HEAD_RCH) != 0);
+	return(cap->tracker.ch != DZ_HEAD_RCH);
 }
 
 static __dz_vectorize
@@ -3142,7 +3142,7 @@ void dz_trace_push_op(dz_trace_work_t *w, uint64_t op, uint16_t next_score)
 	*--w->path.ptr = DZ_CIGAR_INTL>>(op<<3);
 	w->cnt[op]++;
 	w->score = next_score;
-	debug("score(%u), op(%c), idx(%zu)", dz_rm_ofs(next_score), *w->path.ptr, w->idx);
+	debug("score(%u, %d), op(%c), idx(%zu)", next_score, dz_rm_ofs(next_score), *w->path.ptr, w->idx);
 	return;
 }
 
@@ -3156,7 +3156,7 @@ uint64_t dz_trace_eat_match(dz_trace_work_t *w, dz_profile_t const *profile, dz_
 	dz_trace_match_t m = get_match(profile->matrix, w->query, w->idx, w->rch);
 
 	/* skip if score does not match */
-	debug("test match, rch(%x), adj_score(%u, %u), match(%d, %u)", w->rch, dz_rm_ofs(dz_trace_score_adj(w)), dz_rm_ofs(s + m.score - DZ_SCORE_OFS), m.score, m.match);
+	debug("test match, rch(%x), adj_score(%d, %d), match(%d, %u)", w->rch, dz_rm_ofs(dz_trace_score_adj(w)), dz_rm_ofs(s + m.score - DZ_SCORE_OFS), m.score, m.match);
 	if(dz_trace_score_adj(w) != (uint16_t)(s + m.score - DZ_SCORE_OFS)) { return(0); }
 
 	/* determine match state; compensate adj before saving */
@@ -3174,12 +3174,12 @@ uint64_t dz_trace_eat_ins(dz_trace_work_t *w) {
 
 	/* skip if score does not match */
 	uint16_t const f = dz_trace_score(DZ_F_MATRIX, w->ccap, w->idx);
-	if(dz_likely(dz_trace_score_raw(w) != f)) { debug("test ins score unmatch, idx(%zu), raw_score(%u), f(%u)", w->idx, dz_rm_ofs(dz_trace_score_raw(w)), f); return(0); }
-	debug("ins, raw_score(%u), f(%u), idx(%zu)", dz_rm_ofs(dz_trace_score_raw(w)), f, w->idx);
+	if(dz_likely(dz_trace_score_raw(w) != f)) { debug("test ins score unmatch, idx(%zu), raw_score(%d), f(%u)", w->idx, dz_rm_ofs(dz_trace_score_raw(w)), f); return(0); }
+	debug("ins, raw_score(%d), f(%u), idx(%zu)", dz_rm_ofs(dz_trace_score_raw(w)), f, w->idx);
 
 	while(!dz_trace_test_idx(w, w->ccap, 2)) {		/* do not move to F matrix when gap longer than 2 is not possible */
 		uint16_t const x = dz_trace_score(DZ_F_MATRIX, w->ccap, w->idx - 1);
-		debug("ins, raw_score(%u), x(%u), ie(%u), idx(%zu)", dz_rm_ofs(dz_trace_score_raw(w)), x, w->ie, w->idx);
+		debug("ins, raw_score(%d), x(%u), ie(%u), idx(%zu)", dz_rm_ofs(dz_trace_score_raw(w)), x, w->ie, w->idx);
 		if(dz_trace_score_raw(w) != x - w->ie) { break; }
 
 		dz_trace_push_op(w, DZ_F_MATRIX, x);
@@ -3198,13 +3198,13 @@ uint64_t dz_trace_eat_del(dz_trace_work_t *w) {
 
 	/* skip if score does not match */
 	uint16_t const e = dz_trace_score(DZ_E_MATRIX, w->ccap, w->idx);
-	if(dz_likely(dz_trace_score_raw(w) != e)) { debug("test del score unmatch, idx(%zu), raw_score(%u), e(%u)", w->idx, dz_rm_ofs(dz_trace_score_raw(w)), e); return(0); }
-	debug("del, raw_score(%u), f(%u)", dz_rm_ofs(dz_trace_score_raw(w)), e);
+	if(dz_likely(dz_trace_score_raw(w) != e)) { debug("test del score unmatch, idx(%zu), raw_score(%d), e(%u)", w->idx, dz_rm_ofs(dz_trace_score_raw(w)), e); return(0); }
+	debug("del, raw_score(%d), f(%u)", dz_rm_ofs(dz_trace_score_raw(w)), e);
 
 	do {
 		uint16_t const x = dz_trace_score(DZ_E_MATRIX, w->pcap, w->idx);
 		if(dz_trace_score_adj(w) != x - w->de) { break; }
-		debug("del, adj_score(%u), x(%u), de(%u)", dz_rm_ofs(dz_trace_score_adj(w)), x, w->de);
+		debug("del, adj_score(%d), x(%u), de(%u)", dz_rm_ofs(dz_trace_score_adj(w)), x, w->de);
 
 		dz_trace_push_op(w, DZ_E_MATRIX, x);
 		dz_trace_unwind_h(w, DZ_E_MATRIX);
@@ -4430,7 +4430,7 @@ unittest( "adj.gaps" ) {
 	struct dz_s *dz = dz_init(DZ_UNITTEST_SCORE_PARAMS);
 	ut_assert(dz != NULL);
 
-	for(size_t i = 0; i < 16; i++) {
+	for(size_t i = 0; i < 256; i++) {
 		size_t const len = 16384;
 		dz_unittest_seq_t query = dz_unittest_rand_seq(len);
 		struct dz_query_s const *q = dz_pack_query_forward(dz, query.seq, query.len);
