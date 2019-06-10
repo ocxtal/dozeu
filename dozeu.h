@@ -1347,7 +1347,9 @@ uint64_t dz_arena_add_stack(dz_arena_t *mem, size_t size)
 static __dz_force_inline
 void *dz_arena_malloc(dz_arena_t *mem, size_t size)
 {
-	if(dz_arena_stack_rem(mem) < 4096) { dz_arena_add_stack(mem, 0); }
+	if(size > dz_arena_stack_rem(mem) || dz_arena_stack_rem(mem) < 4096) {
+		dz_arena_add_stack(mem, size);
+	}
 	void *ptr = (void *)mem->stack.top;
 	mem->stack.top += dz_roundup(size, sizeof(__m128i));
 	return(ptr);
