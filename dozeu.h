@@ -1748,7 +1748,7 @@ dz_static_assert(offsetof(dz_forefront_t, max)   == offsetof(dz_state_t, max.sco
 
 
 /* merge incoming vectors; using SIMD max to avoid test-and-branch */
-#if 0
+#if 1
 typedef struct {
 	__m128i range_cnt;	/* dz_range_t and dz_ref_cnt_t pair on xmm */
 	__m128i max;		/* dz_max_t on xmm */
