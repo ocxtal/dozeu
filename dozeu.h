@@ -1235,14 +1235,16 @@ typedef struct dz_arena_block_s {
 typedef struct dz_stack_s {
 	dz_arena_block_t *curr;
 	uint8_t *top, *end;
-	uint64_t _pad[3];
+	uint64_t _pad;
 } dz_stack_t;
 
 /* typedef */
 struct dz_arena_s {
 	dz_arena_block_t blk;
 	dz_stack_t stack;
+	uint64_t _pad[2];
 } /* dz_arena_t */;
+dz_static_assert(sizeof(dz_arena_t) == 64);
 #define dz_arena_stack_rem(_mem)		( (size_t)((_mem)->stack.end - (_mem)->stack.top) )
 
 
@@ -1363,11 +1365,29 @@ void *dz_arena_malloc(dz_arena_t *mem, size_t size)
 	debug("size(%zu), stack(%p, %p, %zu)", size, mem->stack.top, mem->stack.end, dz_arena_stack_rem(mem));
 	return(ptr);
 }
+
+
+/*
+ * save and restore malloc state; NOTE: unstable
+ */
+typedef struct dz_freeze_s {
+	dz_stack_t stack;
+} dz_freeze_t;
+dz_static_assert(sizeof(dz_freeze_t) == 32);
+
 static __dz_force_inline
-void dz_arena_free(dz_arena_t *mem, void *ptr)
+dz_freeze_t *dz_arena_freeze(dz_arena_t *mem)
 {
-	dz_unused(mem);
-	dz_unused(ptr);
+	dz_stack_t stack = mem->stack;
+
+	dz_freeze_t *fz = dz_arena_malloc(mem, sizeof(dz_freeze_t));
+	fz->stack = stack;
+	return(fz);
+}
+static __dz_force_inline
+void dz_arena_restore(dz_arena_t *mem, dz_freeze_t const *fz)
+{
+	mem->stack = fz->stack;
 	return;
 }
 
