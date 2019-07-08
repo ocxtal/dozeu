@@ -2376,16 +2376,7 @@ void dz_fill_work_init(dz_work_t *w, dz_fill_work_t *fw)
 	return;
 }
 
-static __dz_vectorize
-void dz_fill_load_vector(dz_fill_work_t *fw, size_t p)
-{
-	fw->e = _mm_load_si128((__m128i const *)&fw->prev_col[p].e);
-	fw->s = _mm_load_si128((__m128i const *)&fw->prev_col[p].s);
 
-	debug("col(%p, %p), p(%zu)", fw->prev_col, fw->col, p);
-	// print_vector(fw->e); print_vector(fw->s);
-	return;
-}
 
 static __dz_vectorize
 void dz_fill_update_vector(dz_work_t *w, dz_fill_work_t *fw, __m128i sc, __m128i bv)
@@ -2412,6 +2403,18 @@ void dz_fill_update_vector(dz_work_t *w, dz_fill_work_t *fw, __m128i sc, __m128i
 	/* S[i, j] = max{ U[i, j], F[i, j] } */
 	__m128i const us = _mm_max_epu16(ts, tf);
 
+	/* done */
+	fw->f = tf;
+	fw->e = te;
+	fw->s = us;
+
+	print_vector(us); /* print_vector(bv); */
+	return;
+}
+
+static __dz_vectorize
+void dz_fill_update_maxv(dz_fill_work_t *fw)
+{
 	/* update max */
 	#ifdef DZ_FULL_LENGTH_BONUS
 		fw->maxv = _mm_max_epu16(fw->maxv, _mm_add_epi16(us, bv));
@@ -2419,12 +2422,18 @@ void dz_fill_update_vector(dz_work_t *w, dz_fill_work_t *fw, __m128i sc, __m128i
 		dz_unused(bv);
 		fw->maxv = _mm_max_epu16(fw->maxv, us);
 	#endif
-	print_vector(us); /* print_vector(bv); */ print_vector(fw->maxv);
+	print_vector(fw->maxv);
+	return;
+}
 
-	/* done */
-	fw->f = tf;
-	fw->e = te;
-	fw->s = us;
+static __dz_vectorize
+void dz_fill_load_vector(dz_fill_work_t *fw, size_t p)
+{
+	fw->e = _mm_load_si128((__m128i const *)&fw->prev_col[p].e);
+	fw->s = _mm_load_si128((__m128i const *)&fw->prev_col[p].s);
+
+	debug("col(%p, %p), p(%zu)", fw->prev_col, fw->col, p);
+	// print_vector(fw->e); print_vector(fw->s);
 	return;
 }
 
@@ -2478,39 +2487,53 @@ void dz_fill_remove_top(dz_work_t *w, dz_fill_work_t *fw)
 static __dz_vectorize
 uint64_t dz_fill_is_bottom(dz_work_t *w, dz_query_t const *query)
 {
+	/* eblk promoted to size_t */
 	return(w->state.range.eblk >= query->blen);
 }
 
 static __dz_vectorize
 uint64_t dz_fill_column_body(dz_work_t *w, dz_fill_work_t *fw, dz_fetcher_t *fetcher, dz_profile_t const *profile, dz_query_t const *query)
 {
-	for(uint64_t p = w->state.range.sblk; p < w->state.range.eblk; p++) {
-		/* load previous DP matrix vectors */
-		dz_fill_load_vector(fw, p);
+	/* return 0 if continue to tail-fill loop */
+	size_t p = --w->state.range.sblk;	/* put margin at the head for simplicity of the outer loop */
+	do {
+		w->state.range.sblk++;
 
-		/* load score profile and update vectors */
-		__m128i const sc = fetcher->get_profile(fetcher->opaque, profile->matrix, query, p * DZ_L);
-		__m128i const bv = dz_query_get_bonus(query, p);
-		dz_fill_update_vector(w, fw, sc, bv);
+		/* clip head */
+		fw->col--;
+		fw->f = w->minv;
 
-		/* save if at least one cell survived */
-		if(dz_likely(!dz_fill_test_xdrop(fw))) {
+		/* load-update-save loop; fallthrough to return(is_bottom) */
+		while(dz_unlikely(++p >= w->state.range.eblk)) {
+			/* load previous DP matrix vectors */
+			dz_fill_load_vector(fw, p);
+
+			/* load score profile and update vectors */
+			__m128i const sc = fetcher->get_profile(fetcher->opaque, profile->matrix, query, p * DZ_L);
+			__m128i const bv = dz_query_get_bonus(query, p);
+			dz_fill_update_vector(w, fw, sc, bv);
+
+			/* save if at least one cell survived */
+			if(dz_unlikely(dz_fill_test_xdrop(fw))) {
+				goto _xdrop;			/* skip the return right after this loop */
+			}
+
+			/* save and update max vector */
+			dz_fill_update_maxv(fw);
 			dz_fill_store_vector(fw, p);
-			continue;
-		}
 
-		/* vector removed; clip head */
-		if(p == w->state.range.sblk) {
-			dz_fill_remove_top(w, fw);
-			continue;
 		}
+		return(dz_fill_is_bottom(w, query));	/* extend further if query remains */
 
-		/* terminate */
-		w->state.range.eblk = p;
-		return(1);
-	}
+		/* break */
+	_xdrop:;
+	} while(p == w->state.range.sblk);	/* continue the loop when the xdrop is invoked at the top */
+
+	/* write back tail when xdrop */
+	w->state.range.eblk = p;
+
 	debug("range(%u, %u), blen(%zu)", w->state.range.sblk, w->state.range.eblk, query->blen);
-	return(dz_fill_is_bottom(w, query));
+	return(1);							/* do not continue fill-in when xdrop */
 }
 
 static __dz_vectorize
