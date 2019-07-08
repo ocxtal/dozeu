@@ -1736,7 +1736,7 @@ typedef struct {
 
 /* placed just after every score vector to indicate the length */
 typedef struct dz_range_s {
-	uint32_t sblk, eblk;
+	uint32_t sblk, eblk;/* uint32_t pair so that we can take max of ranges with pmaxud */
 } dz_range_t;
 #define dz_range(_p)				( (dz_range_t *)(_p) )
 #define dz_crange(_p)				( (dz_range_t const *)(_p) )
@@ -2299,7 +2299,7 @@ void dz_merge_init_col(dz_work_t *w, dz_swgv_t *col)
 	__m128i const minv = _mm_set1_epi16(dz_add_ofs(INT16_MIN));
 	dz_swgv_t const v = { minv, minv, minv };
 
-	for(uint64_t p = w->state.range.sblk; p < w->state.range.eblk; p++) {
+	for(uint32_t p = w->state.range.sblk; p < w->state.range.eblk; p++) {
 		dz_store_swgv(&col[p], v);
 	}
 	return;
@@ -2371,10 +2371,10 @@ static __dz_vectorize
 void dz_fill_work_init(dz_work_t *w, dz_fill_work_t *fw)
 {
 	/* S at i == 0 */
-	__m128i isv = _mm_load_si128((__m128i const *)&(&w->init)[-7]);
+	__m128i const isv = _mm_load_si128((__m128i const *)&(&w->init)[-7]);
 
 	/* FIXME: offsetted */
-	fw->f    = w->minv;
+	fw->f    = w->minv;		/* F will be initialized again just before the fill-in loop */
 	fw->e    = w->minv;
 	fw->s    = w->minv;
 	fw->ps   = w->state.range.sblk == 0 ? isv : w->minv;	/* ofs(0) if scan, min otherwise */
@@ -2382,6 +2382,7 @@ void dz_fill_work_init(dz_work_t *w, dz_fill_work_t *fw)
 	fw->xtv  = _mm_set1_epi16(w->state.max.inc - w->xt);	/* offset already included; next offset == current max thus X-drop threshold is always -xt */
 	return;
 }
+
 
 static __dz_vectorize
 void dz_fill_load_vector(dz_fill_work_t *fw, size_t p)
@@ -2395,16 +2396,16 @@ void dz_fill_load_vector(dz_fill_work_t *fw, size_t p)
 }
 
 static __dz_vectorize
-void dz_fill_update_vector(dz_work_t *w, dz_fill_work_t *fw, __m128i sc, __m128i bv)
+void dz_fill_update_vector(dz_work_t *w, dz_fill_work_t *fw, __m128i sc)
 {
 	/* E[i, j] = max{ E[i - 1, j], S[i - 1, j] - Gi } - Ge */
 	__m128i const tte = _mm_max_epu16(fw->e, _mm_subs_epu16(fw->s, w->div));
-	__m128i const te = _mm_subs_epu16(tte, w->dev);
+	__m128i const te  = _mm_subs_epu16(tte, w->dev);
 	/* print_vector(_mm_alignr_epi8(s, ps, 14)); print_vector(sc); */
 
 	/* U[i, j] = max{ E[i, j], S[i - 1, j - 1] + sc(i, j) } */
 	__m128i const tts = _mm_adds_epu16(sc, _mm_alignr_epi8(fw->s, fw->ps, 14));
-	__m128i const ts = _mm_max_epu16(te, _mm_subs_epu16(tts, w->ofsv));
+	__m128i const ts  = _mm_max_epu16(te, _mm_subs_epu16(tts, w->ofsv));
 	fw->ps = fw->s;
 
 	/* fold F[i, j] = max{ U[i, j] - Gi, F[i, j - 1] - Ge } */
@@ -2419,19 +2420,26 @@ void dz_fill_update_vector(dz_work_t *w, dz_fill_work_t *fw, __m128i sc, __m128i
 	/* S[i, j] = max{ U[i, j], F[i, j] } */
 	__m128i const us = _mm_max_epu16(ts, tf);
 
-	/* update max */
-	#ifdef DZ_FULL_LENGTH_BONUS
-		fw->maxv = _mm_max_epu16(fw->maxv, _mm_add_epi16(us, bv));
-	#else
-		dz_unused(bv);
-		fw->maxv = _mm_max_epu16(fw->maxv, us);
-	#endif
-	print_vector(us); /* print_vector(bv); */ print_vector(fw->maxv);
-
 	/* done */
 	fw->f = tf;
 	fw->e = te;
 	fw->s = us;
+
+	print_vector(us); /* print_vector(bv); */
+	return;
+}
+
+static __dz_vectorize
+void dz_fill_update_maxv(dz_fill_work_t *fw, __m128i bv)
+{
+	/* update max */
+	#ifdef DZ_FULL_LENGTH_BONUS
+		fw->maxv = _mm_max_epu16(fw->maxv, _mm_add_epi16(fw->s, bv));
+	#else
+		dz_unused(bv);
+		fw->maxv = _mm_max_epu16(fw->maxv, fw->s);
+	#endif
+	print_vector(fw->maxv);
 	return;
 }
 
@@ -2448,6 +2456,7 @@ void dz_fill_store_vector(dz_fill_work_t *fw, size_t p)
 	// print_vector(fw->s);
 	return;
 }
+
 
 static __dz_vectorize
 uint16_t dz_fill_fold_max(__m128i v)
@@ -2468,69 +2477,80 @@ uint64_t dz_fill_test_xdrop(dz_fill_work_t *fw)
 }
 
 static __dz_vectorize
-void dz_fill_remove_top(dz_work_t *w, dz_fill_work_t *fw)
-{
-	/* this function is called when the topmost vector is removed by X-drop criterion */
-
-	/* first adjust pointer and index */
-	w->state.range.sblk++;
-	fw->col--;
-
-	/* break dependency link from the removed cell */
-	fw->f = w->minv;
-	return;
-}
-
-
-static __dz_vectorize
 uint64_t dz_fill_is_bottom(dz_work_t *w, dz_query_t const *query)
 {
-	return(w->state.range.eblk >= query->blen);
+	return(w->state.range.eblk >= (uint32_t)query->blen);
 }
 
 static __dz_vectorize
 uint64_t dz_fill_column_body(dz_work_t *w, dz_fill_work_t *fw, dz_fetcher_t *fetcher, dz_profile_t const *profile, dz_query_t const *query)
 {
-	for(uint64_t p = w->state.range.sblk; p < w->state.range.eblk; p++) {
-		/* load previous DP matrix vectors */
-		dz_fill_load_vector(fw, p);
+	/*
+	 * return 0 if continue to tail-fill loop
+	 */
 
-		/* load score profile and update vectors */
-		__m128i const sc = fetcher->get_profile(fetcher->opaque, profile->matrix, query, p * DZ_L);
-		__m128i const bv = dz_query_get_bonus(query, p);
-		dz_fill_update_vector(w, fw, sc, bv);
+	/* put margin at the head for simplicity of the outer loop */
+	w->state.range.sblk--;
+	fw->col++;
 
-		/* save if at least one cell survived */
-		if(dz_likely(!dz_fill_test_xdrop(fw))) {
+	uint32_t p = w->state.range.sblk;		/* make sure it's decremented by one (see above) */
+	do {
+		/* remove head vector by one; complemented with the margin put above */
+		w->state.range.sblk++;
+		fw->col--;
+
+		/* reset f vector when succeeding vector is missing */
+		fw->f = w->minv;
+
+		/* load-update-save loop; fallthrough to return(is_bottom) */
+		while(++p < w->state.range.eblk) {
+			/* load previous DP matrix vectors */
+			dz_fill_load_vector(fw, p);
+
+			/* load score profile and update vectors */
+			__m128i const sc = fetcher->get_profile(fetcher->opaque, profile->matrix, query, p * DZ_L);
+			dz_fill_update_vector(w, fw, sc);
+
+			/* save if at least one cell survived; we don't need update max vector when all the cells in the vector met xdrop */
+			if(dz_unlikely(dz_fill_test_xdrop(fw))) {
+				goto _xdrop;			/* skip the return right after this loop */
+			}
+
+			/* save vectors */
+			__m128i const bv = dz_query_get_bonus(query, p);	/* we expect this load is issued before the branch above */
+			dz_fill_update_maxv(fw, bv);		/* (somewhat lazy) max update; see above */
 			dz_fill_store_vector(fw, p);
-			continue;
-		}
 
-		/* vector removed; clip head */
-		if(p == w->state.range.sblk) {
-			dz_fill_remove_top(w, fw);
-			continue;
 		}
+		return(dz_fill_is_bottom(w, query));	/* extend further if query remains */
 
-		/* terminate */
-		w->state.range.eblk = p;
-		return(1);
-	}
+		/* break */
+	_xdrop:;
+	} while(p == w->state.range.sblk);	/* continue the loop when the xdrop is invoked at the top */
+
+	/* write back tail when xdrop */
+	w->state.range.eblk = p;
+
 	debug("range(%u, %u), blen(%zu)", w->state.range.sblk, w->state.range.eblk, query->blen);
-	return(dz_fill_is_bottom(w, query));
+	return(1);							/* do not continue fill-in when xdrop */
 }
 
 static __dz_vectorize
 void dz_fill_column_tail(dz_work_t *w, dz_fill_work_t *fw, dz_fetcher_t *fetcher, dz_profile_t const *profile, dz_query_t const *query)
 {
 	/* forefront extension; clip the column length if too long */
-	fw->e = w->minv;
-	fw->s = w->minv;
+	fw->e = w->minv;					/* E is kept min in this loop */
+	fw->s = w->minv;					/* S follows F */
 
 	/* update the last vector */
 	__m128i const sc = fetcher->get_profile(fetcher->opaque, profile->matrix, query, w->state.range.eblk * DZ_L);
+	dz_fill_update_vector(w, fw, sc);
+
+	#if 0
+	/* do we still have a chance that the first cell of the vector becomes the maximum? */
 	__m128i const bv = dz_query_get_bonus(query, w->state.range.eblk);
-	dz_fill_update_vector(w, fw, sc, bv);
+	dz_fill_update_maxv(fw, bv);
+	#endif
 
 	/* until all the cells drop */
 	do {
@@ -2539,7 +2559,7 @@ void dz_fill_column_tail(dz_work_t *w, dz_fill_work_t *fw, dz_fetcher_t *fetcher
 
 		fw->f = _mm_subs_epu16(fw->f, w->iev8);
 		fw->s = _mm_subs_epu16(fw->s, w->iev8);
-	} while(++w->state.range.eblk < query->blen);
+	} while(++w->state.range.eblk < (uint32_t)query->blen);
 	return;
 }
 
@@ -2606,7 +2626,7 @@ void dz_reset_base(dz_work_t *w, dz_swgv_t *col)
 	debug("reset base, adj(%u), cap(%p)", adj, cap);
 
 	/* subtract adjustment */
-	for(uint64_t p = w->state.range.sblk; p < w->state.range.eblk; p++) {
+	for(uint32_t p = w->state.range.sblk; p < w->state.range.eblk; p++) {
 		/* load-compensate-store */
 		dz_swgv_t const v  = dz_load_swgv(&col[p]);
 		dz_swgv_t const cv = dz_subs_swgv(v, adjv);
