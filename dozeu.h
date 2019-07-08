@@ -1043,6 +1043,7 @@ __m128i dz_fill_calc_n(__m128i s, __m128i t)
 static __dz_vectorize
 __m128i dz_fill_calc_delta_a(dz_realigner_node_t const *node)
 {
+	/* it's possible to use ymm here for better performance */
 	__m128i const x1 = _mm_loadu_si128((__m128i const *)&node->a);		/* (t, g, c, a) */
 	__m128i const x2 = _mm_loadu_si128((__m128i const *)&node->gap);	/* (-, -, -, gap) */
 	__m128i const n = dz_fill_calc_n(x1, x2);							/* a + c + g + t + gap */
@@ -2467,6 +2468,21 @@ uint64_t dz_fill_test_xdrop(dz_fill_work_t *fw)
 }
 
 static __dz_vectorize
+void dz_fill_remove_top(dz_work_t *w, dz_fill_work_t *fw)
+{
+	/* this function is called when the topmost vector is removed by X-drop criterion */
+
+	/* first adjust pointer and index */
+	w->state.range.sblk++;
+	fw->col--;
+
+	/* break dependency link from the removed cell */
+	fw->f = w->minv;
+	return;
+}
+
+
+static __dz_vectorize
 uint64_t dz_fill_is_bottom(dz_work_t *w, dz_query_t const *query)
 {
 	return(w->state.range.eblk >= query->blen);
@@ -2492,8 +2508,7 @@ uint64_t dz_fill_column_body(dz_work_t *w, dz_fill_work_t *fw, dz_fetcher_t *fet
 
 		/* vector removed; clip head */
 		if(p == w->state.range.sblk) {
-			w->state.range.sblk++;
-			fw->col--;
+			dz_fill_remove_top(w, fw);
 			continue;
 		}
 
