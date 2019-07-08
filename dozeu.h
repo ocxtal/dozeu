@@ -1,7 +1,7 @@
 
 // $(CC) -O3 -march=native -DMAIN -o dozeu dozeu.c
-// #define DEBUG
-// #define DZ_PRINT_VECTOR
+#define DEBUG
+#define DZ_PRINT_VECTOR
 
 /* print_vector for debugging */
 #ifdef DZ_PRINT_VECTOR
@@ -122,7 +122,11 @@ extern "C" {
 #endif
 
 #ifndef DZ_OVERFLOW_MARGIN
-#  define DZ_OVERFLOW_MARGIN		( 256 )
+#  ifdef DEBUG
+#    define DZ_OVERFLOW_MARGIN		( 256 )
+#  else
+#    define DZ_OVERFLOW_MARGIN		( 32768 - 256 )
+#  endif
 #endif
 
 
@@ -164,6 +168,7 @@ extern "C" {
 /* unittest and debug configuration */
 #if (defined(DEBUG) || (defined(UNITTEST) && UNITTEST != 0)) && !defined(__cplusplus)
 #  include "debug.h"
+#  include "wmalloc.h"
 #  if !defined(UNITTEST_UNIQUE_ID)
 #    define UNITTEST_ALIAS_MAIN		0
 #    define UNITTEST_UNIQUE_ID		3213
@@ -1801,6 +1806,8 @@ dz_state_vec_t dz_merge_state_intl(dz_state_t const **ff, size_t fcnt)
 	__m128i range_cnt = _mm_setzero_si128();
 	__m128i max       = _mm_setzero_si128();
 	for(size_t i = 0; i < fcnt; i++) {
+		if(dz_is_terminated(ff[i])) { continue; }
+
 		/* load: sblk, eblk, ccnt, scnt */
 		__m128i const tv  = _mm_loadu_si128((__m128i const *)&ff[i]->range.sblk);
 		__m128i const rcv = _mm_xor_si128(tv, negv);	/* negate sblk */
@@ -4551,7 +4558,7 @@ unittest( "long.graph" ) {
 	dz_unittest_seq_t ref[cnt];
 	memset(ref, 0, cnt * sizeof(dz_unittest_seq_t));
 
-	size_t const len = 4 * 1024 * 1024;
+	size_t const len = 2 * 1024 * 1024;
 	for(size_t i = 0; i < cnt; i++) {
 		ref[i] = dz_unittest_rand_seq((i % 3) == 0 ? 16 : len);
 	}
@@ -4591,6 +4598,9 @@ unittest( "long.graph" ) {
 
 		/* score increasing */
 		ut_assert(dz_max2(ff[i]->max, ff[i + 1]->max) > prev_max, "i(%zu), (%d, %d), %d", i, ff[i]->max, ff[i + 1]->max, prev_max);
+		debugblock({
+			if(dz_max2(ff[i]->max, ff[i + 1]->max) <= prev_max) { trap(); }
+		});
 		prev_max = dz_max2(ff[i]->max, ff[i + 1]->max);
 	}
 

@@ -79,7 +79,7 @@
 	dbprintf("[%s: %s(%d)] " fmt "%s\n", __FILE__, __func__, __LINE__, __VA_ARGS__); \
 }
 #define dbprintf(fmt, ...) { \
-	xfprintf(stderr, fmt, __VA_ARGS__); \
+	fprintf(stderr, fmt, __VA_ARGS__); \
 }
 /* compatible with dump in unittest.h */
 #if 0
@@ -128,7 +128,7 @@
 	ntprintf("[%s: %s(%d)] " fmt "%s\n", __FILE__, __func__, __LINE__, __VA_ARGS__); \
 }
 #define ntprintf(fmt, ...) { \
-	xfprintf(stderr, fmt, __VA_ARGS__); \
+	fprintf(stderr, fmt, __VA_ARGS__); \
 }
 
 
