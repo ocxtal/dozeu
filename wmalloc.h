@@ -56,7 +56,7 @@ void oom_abort(
  */
 #define wrapped_malloc(_x) ({ \
 	size_t _req_size = (size_t)(_x); \
-	fprintf(stderr, "%s:%d: size(%zu)\n", __func__, __LINE__, (size_t)(_req_size)); \
+	/* fprintf(stderr, "%s:%d: size(%zu)\n", __func__, __LINE__, (size_t)(_req_size)); */ \
 	debugblock({ if((_req_size) >= 20ULL * 1024 * 1024 * 1024) { debug("size(%zu)", (size_t)(_req_size)); trap(); } }); \
 	void *_ptr = malloc(_req_size); \
 	if((_ptr == NULL)) { \
