@@ -4593,7 +4593,7 @@ unittest( "long.graph" ) {
 	dz_unittest_seq_t ref[cnt];
 	memset(ref, 0, cnt * sizeof(dz_unittest_seq_t));
 
-	size_t const len = 4 * 1024 * 1024;
+	size_t const len = 2 * 1024 * 1024;
 	for(size_t i = 0; i < cnt; i++) {
 		ref[i] = dz_unittest_rand_seq((i % 3) == 0 ? 16 : len);
 	}
