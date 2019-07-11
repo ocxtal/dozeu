@@ -2358,7 +2358,7 @@ dz_swgv_t *dz_merge_column(dz_work_t *w, dz_cap_t *prev_cap, dz_profile_t const 
 
 /* fill in */
 typedef struct {
-	__m128i f, e, s;
+	__m128i e, f, s;
 	__m128i ps;			/* prev s */
 
 	/* max tracker */
