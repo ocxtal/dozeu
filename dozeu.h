@@ -1776,6 +1776,15 @@ int32_t dz_score_flush(dz_score_t *score)
 	return(score->abs);
 }
 
+static __dz_vectorize
+int32_t dz_score_rebase(dz_score_t *score)
+{
+	uint32_t const inc = score->inc;
+	score->abs += dz_rm_ofs(inc);
+	score->inc = dz_add_ofs(0);
+	return(dz_rm_ofs(inc));
+}
+
 
 
 
@@ -2210,7 +2219,7 @@ dz_cap_t const *dz_unwind_cap(dz_cap_t const *cap)
 
 
 static __dz_vectorize
-dz_state_t const *dz_slice_tail(dz_arena_t *mem, dz_state_t const *fin, dz_swgv_t *col)
+dz_state_t const *dz_slice_tail(dz_arena_t *mem, dz_swgv_t *col, dz_state_t const *fin)
 {
 	dz_state_t *tail = dz_state(dz_cap_column(col, fin->range.eblk));
 	debug("col(%p), range(%u, %u), tail(%p)", col, fin->range.sblk, fin->range.eblk, tail);
@@ -2373,6 +2382,21 @@ dz_swgv_t *dz_swgv_merge(dz_arena_t *mem, dz_state_t const *merged, dz_state_t c
 	dz_swgv_merge_init(col, merged);
 	dz_swgv_fold_col(col, merged, ff, fcnt);
 	return(col);
+}
+
+static __dz_vectorize
+void dz_swgv_rebase(dz_swgv_t *col, dz_range_t const *range, int32_t adj)
+{
+
+
+	/* subtract adjustment */
+	for(uint32_t p = w->state.range.sblk; p < w->state.range.eblk; p++) {
+		/* load-compensate-store */
+		dz_swgv_t const v  = dz_load_swgv(&col[p]);
+		dz_swgv_t const cv = dz_subs_swgv(v, adjv);
+		dz_store_swgv(&col[p], cv);
+	}
+	return;
 }
 
 
@@ -2555,6 +2579,31 @@ static __dz_vectorize
 uint64_t dz_max_is_overflow(dz_max_work_t const *t)
 {
 	return(t->max.score.inc > (UINT16_MAX - DZ_OVERFLOW_MARGIN));
+}
+
+static __dz_vectorize
+int32_t dz_max_rebase(dz_max_work_t *t)
+{
+	return(dz_score_rebase(&t->max.score));
+
+	/* removing offset */
+	uint16_t const adj = dz_rm_ofs(t->max.score.inc);
+
+	t->max.score += adj;
+	t->max.inc = dz_add_ofs(0);
+	debug("reset base, adj(%u), cap(%p)", adj, cap);
+
+
+	;
+
+
+	/* restore cap pointer; cap before col holds range for previous col */
+	dz_cap_t *cap = dz_cap(col + range->sblk) - 1;
+	cap->link.adj = adj;		/* overwrite adj */
+
+	__m128i const adjv = _mm_set1_epi16(adj);
+
+	return(adj);
 }
 
 static __dz_vectorize
@@ -2964,6 +3013,12 @@ dz_ref_cnt_t dz_fetch_finalize(dz_fetch_work_t const *f, dz_ref_cnt_t const *pre
 
 
 
+static __dz_vectorize
+dz_swgv_t *dz_extend_core_loop(dz_work_t *w, dz_arena_t *mem)
+{
+	return(col);
+}
+
 
 static __dz_vectorize
 dz_state_t const *dz_extend_core(
@@ -3008,7 +3063,8 @@ dz_state_t const *dz_extend_core(
 
 		/* place internal merging vector if score exceeded floor */
 		if(dz_unlikely(dz_max_is_overflow(&w.t))) {
-			dz_reset_base(&tracker, col);
+			uint16_t const adj = dz_max_rebase(&w.t);
+			dz_swgv_rebase(col, adj);
 		}
 	}
 
@@ -3020,7 +3076,7 @@ dz_state_t const *dz_extend_core(
 	};
 
 	/* save them in tail object */
-	return(dz_slice_tail(mem, &fin, col));
+	return(dz_slice_tail(mem, col, &fin));
 }
 
 
