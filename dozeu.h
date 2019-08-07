@@ -320,12 +320,6 @@ typedef struct {
 	dz_fill_get_bound_t get_bound;		/* can be NULL */
 } dz_fetcher_t;
 
-/*
- * core fill / trace function forward declarations
- */
-// static dz_state_t const *dz_extend_core(dz_arena_t *mem, dz_profile_t const *profile, dz_query_t const *query, dz_fetcher_t const *fetcher, dz_state_t const **ff, size_t fcnt);
-// static dz_alignment_t const *dz_trace_core(dz_arena_t *mem, dz_profile_t const *profile, dz_query_t const *query, dz_trace_get_match_t get_match, dz_state_t const *ff);
-
 
 
 
@@ -414,7 +408,7 @@ void dz_fill_fetcher_init_ascii(dz_fetcher_ascii_t *self, uint8_t const *ref, si
 	return;
 }
 
-static __dz_vectorize __attribute__(( always_inline ))
+static __dz_vectorize
 dz_fill_fetch_t dz_fill_fetch_next_ascii(dz_fetcher_ascii_t *self, int8_t const *score_matrix, dz_query_t const *query)
 {
 	dz_unused(score_matrix);
@@ -442,7 +436,7 @@ dz_fill_fetch_t dz_fill_fetch_next_ascii(dz_fetcher_ascii_t *self, int8_t const 
 	});
 }
 
-static __dz_vectorize __attribute__(( always_inline ))
+static __dz_vectorize
 __m128i dz_fill_get_profile_ascii(dz_fetcher_ascii_t const *self, int8_t const *score_matrix, dz_query_t const *query, size_t qidx)
 {
 	uint8_t const *packed = dz_query_packed_array(query);
@@ -457,7 +451,7 @@ __m128i dz_fill_get_profile_ascii(dz_fetcher_ascii_t const *self, int8_t const *
 	return(_mm_cvtepi8_epi16(sc));
 }
 
-static __dz_vectorize __attribute__(( always_inline ))
+static __dz_vectorize
 dz_trace_match_t dz_trace_get_match_ascii(int8_t const *score_matrix, dz_query_t const *query, size_t qidx, uint32_t rch)
 {
 	uint8_t const *packed = dz_query_packed_array(query);
@@ -1161,7 +1155,7 @@ static __dz_force_inline
 uint64_t dz_arena_add_stack(dz_arena_t *mem, size_t size)
 {
 	debug("add_stack, ptr(%p)", mem->stack.curr->next);
-	if(mem->stack.curr->next == NULL) {
+	if(dz_unlikely(mem->stack.curr->next == NULL)) {
 		/* current stack is the forefront of the memory block chain, add new block */
 		size = dz_max2(
 			size + dz_roundup(sizeof(dz_arena_block_t), DZ_MEM_ALIGN_SIZE),
@@ -1190,7 +1184,7 @@ void *dz_arena_malloc(dz_arena_t *mem, size_t size)
 	size = dz_roundup(size, sizeof(__m128i));
 	debug("size(%zu), stack(%p, %p, %zu)", size, mem->stack.top, mem->stack.end, dz_arena_stack_rem(mem));
 
-	if(size > dz_arena_stack_rem(mem) || dz_arena_stack_rem(mem) < 4096) {
+	if(dz_unlikely(size > dz_arena_stack_rem(mem) || dz_arena_stack_rem(mem) < 4096)) {
 		dz_arena_add_stack(mem, size);
 	}
 	void *ptr = (void *)mem->stack.top;
@@ -1243,7 +1237,7 @@ static __dz_force_inline
 uint8_t *dz_reserve_stack(dz_arena_t *mem, size_t size)
 {
 	/* allocate from heap */
-	if(dz_arena_stack_rem(mem) < size) {
+	if(dz_unlikely(dz_arena_stack_rem(mem) < size)) {
 		dz_arena_add_stack(mem, 0);
 	}
 	return(mem->stack.top);
@@ -1844,7 +1838,7 @@ static __dz_force_inline
 size_t dz_calc_column_size(dz_range_t const *range)
 {
 	size_t const span = range->eblk - range->sblk;
-	size_t const column_size = sizeof(dz_swgv_t) * (span + dz_max2(span, 8));
+	size_t const column_size = sizeof(dz_swgv_t) * (span + 8);
 	size_t const size = (
 		  sizeof(dz_cap_t)	/* header size */
 		+ column_size		/* estimated column size */
@@ -2659,8 +2653,16 @@ static __dz_vectorize
 uint16_t *dz_col_finalize(dz_swgv_t *col, dz_range_t const *range, dz_link_t const *link)
 {
 	dz_cap_t *cap = dz_cap_column(col, range->eblk);
-	cap->range = *range;
-	cap->link  = *link;
+
+	/*
+	 * cap->range = *range;
+	 * cap->link  = *link;
+	 */
+	uint64_t const x = dz_loadu_u64(range);
+	uint64_t const y = dz_loadu_u64(link);
+
+	dz_storeu_u64(&cap->range, x);
+	dz_storeu_u64(&cap->link,  y);
 
 	/* returns pointer to adj */
 	return(&cap->link.adj);
@@ -3851,7 +3853,7 @@ dz_query_t *dz_pack_query_intl(dz_t *self, char const *query, size_t qlen, uint3
 	return(dz_pack_query_core(self->mem, self->profile, (uint8_t const *)query, qlen, &pack));
 }
 
-// static __dz_vectorize
+static __dz_vectorize
 dz_state_t const *dz_extend_intl(dz_arena_t *mem, dz_profile_t const *profile, dz_query_t const *query, dz_state_t const **ff, size_t fcnt, char const *ref, size_t rlen, uint32_t dir)
 {
 	dz_fetcher_ascii_t w __attribute__(( aligned(16) ));
