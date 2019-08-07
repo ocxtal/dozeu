@@ -1773,6 +1773,15 @@ uint64_t dz_max_is_overflow(dz_max_t const *max)
 }
 
 static __dz_vectorize
+void dz_max_forward(dz_max_t *max, uint32_t fwd)
+{
+	dz_unused(max);
+	dz_unused(fwd);
+
+	return;
+}
+
+static __dz_vectorize
 uint32_t dz_max_rebase(dz_max_t *max)
 {
 	return(dz_score_rebase(&max->score));
@@ -2805,9 +2814,16 @@ uint64_t dz_col_fill_core(dz_work_t *w, dz_swgv_t const *prev_col, size_t p)
 	return(dz_maxv_is_drop(&w->maxv, sv));
 }
 
+typedef struct {
+	uint64_t cont;
+	uint32_t fwd;		/* forwarded length of range.sblk */
+} dz_col_fill_head_t;
+
 static __dz_vectorize
-uint64_t dz_col_fill_head(dz_work_t *w, dz_swgv_t const *prev_col, dz_range_t *range)
+dz_col_fill_head_t dz_col_fill_head(dz_work_t *w, dz_swgv_t const *prev_col, dz_range_t *range)
 {
+	uint32_t const sblk = range->sblk;
+
 	switch(0) do {
 		/* the first vector dropped; remove the vector and forward pointer */
 		dz_range_shrink(range);		/* forward sblk */
@@ -2817,7 +2833,12 @@ uint64_t dz_col_fill_head(dz_work_t *w, dz_swgv_t const *prev_col, dz_range_t *r
 
 	default:
 		/* first test if we can continue to DP fill-in; terminate when out-of-range */
-		if(dz_range_is_term(range)) { return(1); }
+		if(dz_range_is_term(range)) {
+			return((dz_col_fill_head_t){
+				.cont = 1,
+				.fwd  = range->sblk - sblk
+			});
+		}
 
 		/* reset F vector before filling-in DP cells */
 		dz_update_reset_v(&w->uvec);
@@ -2826,7 +2847,10 @@ uint64_t dz_col_fill_head(dz_work_t *w, dz_swgv_t const *prev_col, dz_range_t *r
 	} while(dz_col_fill_core(w, prev_col, range->sblk));
 
 	/* continue */
-	return(0);
+	return((dz_col_fill_head_t){
+		.cont = 0,
+		.fwd  = range->sblk - sblk
+	});
 }
 
 static __dz_vectorize
@@ -2943,12 +2967,15 @@ dz_col_fill_t dz_col_fill(dz_work_t *w, dz_swgv_t const *prev_col, dz_swgv_t *ne
 	dz_col_fill_init(w, &ctx->range, &ctx->max, ctx->xth);
 
 	/* if reached the forefront of the query sequence, finish the extension */
-	uint64_t const cont = dz_col_fill_head(w, prev_col, &ctx->range);		/* poll head vectors and determine first survived one */
+	dz_col_fill_head_t const h = dz_col_fill_head(w, prev_col, &ctx->range);		/* poll head vectors and determine first survived one */
+	debug("cont(%lu)", h.cont);
+
+	/* update score offset for skipped blocks */
+	dz_max_forward(&ctx->max, h.fwd);
+
+	/* then start fill-in */
 	dz_swgv_t *col = dz_col_anchor(next_col, ctx->range.sblk);
-
-	debug("cont(%lu), col(%p)", cont, col);
-
-	if(!cont && !dz_col_fill_body(w, prev_col, col, &ctx->range, ctx->blen)) {
+	if(!h.cont && !dz_col_fill_body(w, prev_col, col, &ctx->range, ctx->blen)) {
 		dz_col_fill_tail(w, col, &ctx->range, ctx->blen);
 	}
 
