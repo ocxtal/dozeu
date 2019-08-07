@@ -1587,8 +1587,12 @@ typedef struct {
 static __dz_vectorize
 int32_t dz_score_init(dz_score_t *score)
 {
-	score->abs = 0;
-	score->inc = dz_add_ofs(0);
+	/*
+	 * score->abs = 0;
+	 * score->inc = dz_add_ofs(0);
+	 */
+
+	dz_storeu_u64(score, dz_add_ofs(0));
 	return(0);
 }
 
@@ -1643,28 +1647,40 @@ dz_static_assert(sizeof(dz_link_t) == 8);
 static __dz_vectorize
 void dz_link_init_root(dz_link_t *link)
 {
-	link->rch = DZ_HEAD_RCH | DZ_ROOT_RCH;
-	link->adj = 0;
-	link->idx = 0;		/* no incoming vector for the root */
+	/*
+	 * link->rch = DZ_HEAD_RCH | DZ_ROOT_RCH;
+	 * link->adj = 0;
+	 * link->idx = 0;	// no incoming vector for the root
+	 */
+
+	dz_storeu_u64(link, DZ_HEAD_RCH | DZ_ROOT_RCH);
 	return;
 }
 
 static __dz_vectorize
 void dz_link_init_intl(dz_link_t *link)
 {
-	/* still regarded as head */
-	link->rch = DZ_HEAD_RCH | 0x01;		/* to make the value different from head */
-	link->adj = 0;
-	link->idx = 1;		/* #incoming vectors == 1 */
+	/*
+	 * // still regarded as head
+	 * link->rch = DZ_HEAD_RCH | 0x01;		// to make the value different from head
+	 * link->adj = 0;
+	 * link->idx = 1;		// #incoming vectors == 1
+	 */
+
+	dz_storeu_u64(link, DZ_HEAD_RCH | 0x01 | (0x01ULL<<32));
 	return;
 }
 
 static __dz_vectorize
 void dz_link_init_head(dz_link_t *link, size_t fcnt)
 {
-	link->rch = DZ_HEAD_RCH;
-	link->adj = 0;
-	link->idx = fcnt;	/* save incoming vector count */
+	/*
+	 * link->rch = DZ_HEAD_RCH;
+	 * link->adj = 0;
+	 * link->idx = fcnt;	// save incoming vector count
+	 */
+
+	dz_storeu_u64(link, DZ_HEAD_RCH | ((uint64_t)fcnt<<32));
 	return;
 }
 
@@ -1874,8 +1890,8 @@ dz_cap_t *dz_init_head(dz_head_t *head, dz_max_t const *max, dz_state_t const **
 	dz_unused(ff);
 
 	/* save current max as base */
-	__m128i const x = _mm_loadl_epi64((__m128i const *)&max->score);
-	_mm_storel_epi64((__m128i *)&head->base, x);		/* inc contains offset */
+	uint64_t const x = dz_loadu_u64(&max->score);
+	dz_storeu_u64(&head->base, x);		/* inc contains offset */
 
 	/* mark head */
 	dz_link_init_head(&head->link, fcnt);
