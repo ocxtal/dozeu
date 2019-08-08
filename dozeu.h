@@ -2441,7 +2441,7 @@ typedef struct {
 } dz_fetch_work_t;
 
 static __dz_vectorize
-dz_fetch_work_t dz_fetch_init(dz_fetcher_t const *fetcher, dz_profile_t const *profile, dz_query_t const *query)
+dz_fetch_work_t dz_fetch_init(dz_fetcher_t *fetcher, dz_profile_t const *profile, dz_query_t const *query)
 {
 	return((dz_fetch_work_t){
 		.matrix  = profile->matrix,
@@ -2997,7 +2997,7 @@ dz_state_t *dz_extend_core_loop(
 	dz_swgv_t *prev_col,
 	dz_profile_t const *profile,
 	dz_query_t const *query,
-	dz_fetcher_t const *fetcher)
+	dz_fetcher_t *fetcher)
 {
 	/* working variables */
 	dz_work_t w __attribute__(( aligned(16) )) = {
@@ -3036,7 +3036,7 @@ dz_state_t const *dz_extend_core(
 	dz_arena_t *mem,
 	dz_profile_t const *profile,
 	dz_query_t const *query,
-	dz_fetcher_t const *fetcher,
+	dz_fetcher_t *fetcher,
 	dz_state_t const **ff,
 	size_t fcnt)
 {
@@ -3886,7 +3886,7 @@ dz_state_t const *dz_extend_intl(dz_arena_t *mem, dz_profile_t const *profile, d
 	dz_fetcher_ascii_t w __attribute__(( aligned(16) ));
 	dz_fill_fetcher_init_ascii(&w, (uint8_t const *)ref, rlen, dir);
 
-	dz_fetcher_t const fetcher = {
+	dz_fetcher_t fetcher = {
 		.opaque      = (void *)&w,
 		.fetch_next  = (dz_fill_fetch_next_t)dz_fill_fetch_next_ascii,
 		.get_profile = (dz_fill_get_profile_t)dz_fill_get_profile_ascii,
@@ -3924,7 +3924,7 @@ dz_state_t const *dz_extend_intl(dz_arena_t *mem, dz_profile_t const *profile, d
 	dz_fetcher_2bit_t w __attribute__(( aligned(16) ));
 	dz_fill_fetcher_init_2bit(&w, (uint8_t const *)ref, rlen, dir);
 
-	dz_fetcher_t const fetcher = {
+	dz_fetcher_t fetcher = {
 		.opaque      = (void *)&w,
 		.fetch_next  = (dz_fill_fetch_next_t)dz_fill_fetch_next_2bit,
 		.get_profile = (dz_fill_get_profile_t)dz_fill_get_profile_2bit,
@@ -3962,7 +3962,7 @@ dz_state_t const *dz_extend_intl(dz_arena_t *mem, dz_profile_t const *profile, d
 	dz_fetcher_4bit_t w __attribute__(( aligned(16) ));
 	dz_fill_fetcher_init_4bit(&w, (uint8_t const *)ref, rlen, dir);
 
-	dz_fetcher_t const fetcher = {
+	dz_fetcher_t fetcher = {
 		.opaque      = (void *)&w,
 		.fetch_next  = (dz_fill_fetch_next_t)dz_fill_fetch_next_4bit,
 		.get_profile = (dz_fill_get_profile_t)dz_fill_get_profile_4bit,
@@ -4000,7 +4000,7 @@ dz_state_t const *dz_extend_intl(dz_arena_t *mem, dz_profile_t const *profile, d
 	dz_fetcher_protein_t w __attribute__(( aligned(16) ));
 	dz_fill_fetcher_init_protein(&w, (uint8_t const *)ref, rlen, dir);
 
-	dz_fetcher_t const fetcher = {
+	dz_fetcher_t fetcher = {
 		.opaque      = (void *)&w,
 		.fetch_next  = (dz_fill_fetch_next_t)dz_fill_fetch_next_protein,
 		.get_profile = (dz_fill_get_profile_t)dz_fill_get_profile_protein,
@@ -4038,7 +4038,7 @@ dz_state_t const *dz_extend_intl(dz_arena_t *mem, dz_profile_t const *profile, d
 	dz_fetcher_realigner_t w __attribute__(( aligned(16) ));
 	dz_fill_fetcher_init_realigner(&w, dir, (dz_realigner_node_t const *)ref);
 
-	dz_fetcher_t const fetcher = {
+	dz_fetcher_t fetcher = {
 		.opaque      = (void *)&w,
 		.fetch_next  = (dz_fill_fetch_next_t)dz_fill_fetch_next_realigner,
 		.get_profile = (dz_fill_get_profile_t)dz_fill_get_profile_realigner,
