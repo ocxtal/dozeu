@@ -146,7 +146,7 @@ extern "C" {
 #  warning "SSE4.1 is automatically enabled in dozeu.h, please check compatibility to the system."
 #  define __dz_vectorize			__attribute__(( target( "sse4.1" ) )) inline
 #else
-#  define __dz_vectorize			/* follow the compiler options */
+#  define __dz_vectorize			inline		/* follow the compiler options */
 #endif
 
 
@@ -180,6 +180,7 @@ unittest() { debug("hello"); }
 #    define unittest(...)				static void dz_pp_cat(dz_unused_, __LINE__)(void)
 #    define ut_assert(...)			;
 #    define debug(...)				;
+#    define debugblock(...)			;
 #    define trap()					;
 #  endif
 #endif
@@ -238,6 +239,8 @@ typedef struct dz_alignment_s dz_alignment_t;
 /* pointer casting */
 #define dz_state(_p)				( (dz_state_t *)(_p) )
 #define dz_cstate(_p)				( (dz_state_t const *)(_p) )
+#define dz_pstate(_p)				( (dz_state_t **)(_p) )
+#define dz_cpstate(_p)				( (dz_state_t const **)(_p) )
 
 
 
@@ -281,7 +284,7 @@ static uint8_t const *dz_query_packed_array(dz_query_t const *query);	/* query->
 /*
  * core pack function forward declaration
  */
-static dz_query_t *dz_pack_query_core(dz_arena_t *mem, dz_profile_t const *profile, uint8_t const *query, size_t qlen, dz_pack_query_t const *pack);
+// static dz_query_t *dz_pack_query_core(dz_arena_t *mem, dz_profile_t const *profile, uint8_t const *query, size_t qlen, dz_pack_query_t const *pack);
 
 
 
@@ -291,7 +294,7 @@ static dz_query_t *dz_pack_query_core(dz_arena_t *mem, dz_profile_t const *profi
  */
 typedef struct {
 	uint32_t is_term;
-	uint32_t ch;
+	uint32_t rch;
 } dz_fill_fetch_t;
 
 /* exact banding for realigner */
@@ -305,9 +308,9 @@ typedef struct {
 } dz_trace_match_t;
 
 typedef dz_fill_fetch_t (*dz_fill_fetch_next_t)(void *opaque, int8_t const *score_matrix, dz_query_t const *query);
-typedef __m128i (*dz_fill_get_profile_t)(void *opaque, int8_t const *score_matrix, dz_query_t const *query, size_t qidx);
-typedef dz_fill_bound_t (*dz_fill_get_bound_t)(void *opaque);
-typedef dz_trace_match_t (*dz_trace_get_match_t)(int8_t const *score_matrix, dz_query_t const *query, size_t qidx, uint32_t ch);
+typedef __m128i (*dz_fill_get_profile_t)(void const *opaque, int8_t const *score_matrix, dz_query_t const *query, size_t qidx);
+typedef dz_fill_bound_t (*dz_fill_get_bound_t)(void const *opaque);
+typedef dz_trace_match_t (*dz_trace_get_match_t)(int8_t const *score_matrix, dz_query_t const *query, size_t qidx, uint32_t rch);
 
 typedef struct {
 	void *opaque;
@@ -315,12 +318,6 @@ typedef struct {
 	dz_fill_get_profile_t get_profile;
 	dz_fill_get_bound_t get_bound;		/* can be NULL */
 } dz_fetcher_t;
-
-/*
- * core fill / trace function forward declarations
- */
-static dz_state_t const *dz_extend_core(dz_arena_t *mem, dz_profile_t const *profile, dz_query_t const *query, dz_fetcher_t *fetcher, dz_state_t const **ff, size_t fcnt);
-static dz_alignment_t const *dz_trace_core(dz_arena_t *mem, dz_profile_t const *profile, dz_state_t const *ff, dz_trace_get_match_t get_match);
 
 
 
@@ -382,17 +379,6 @@ __m128i dz_query_conv_ascii(int8_t const *score_matrix, uint32_t dir, __m128i v)
 	return(_mm_shuffle_epi8(cv, v));
 }
 
-static __dz_vectorize
-dz_query_t *dz_pack_query_intl(dz_t *self, char const *query, size_t qlen, uint32_t dir)
-{
-	dz_pack_query_t pack = {
-		.dir      = dir,
-		.calc_dim = dz_query_calc_dim_ascii,
-		.conv     = dz_query_conv_ascii
-	};
-	return(dz_pack_query_core(self->mem, self->profile, (uint8_t const *)query, qlen, &pack));
-}
-
 
 typedef struct {
 	__m128i rv;
@@ -407,7 +393,7 @@ void dz_fill_fetcher_init_ascii(dz_fetcher_ascii_t *self, uint8_t const *ref, si
 	self->p = &ref[dir ? rlen - 1ULL : 0];
 	self->t = &ref[dir ? (size_t)-1LL : rlen];
 	self->inc = dir ? -1LL : 1LL;
-	debug("ref(%p), rlen(%zu), p(%p), t(%p), dir(%u), inc(%ld)", ref, rlen, self->p, self->t, dir, self->inc);
+	debug("ref(%p), rlen(%zu), p(%p), t(%p), dir(%u), inc(%d)", ref, rlen, self->p, self->t, dir, (int32_t)self->inc);
 
 	static uint8_t const conv[16 * 2] __attribute__(( aligned(16) )) = {
 		/* ['A' & 0x0f] = A, ['C' & 0x0f] = C, ['G' & 0x0f] = G, ['T' & 0x0f] = T, ['U' & 0x0f] = T, ['N' & 0x0f] = N */
@@ -430,7 +416,7 @@ dz_fill_fetch_t dz_fill_fetch_next_ascii(dz_fetcher_ascii_t *self, int8_t const 
 	if(self->p == self->t) {
 		return((dz_fill_fetch_t){
 			.is_term = 1,
-			.ch      = 0
+			.rch     = 0
 		});
 	}
 
@@ -438,19 +424,19 @@ dz_fill_fetch_t dz_fill_fetch_next_ascii(dz_fetcher_ascii_t *self, int8_t const 
 	uint32_t const c = *self->p;
 	uint32_t const e = self->conv[c & 0x0f];
 	self->rv = _mm_set1_epi8(e);
-	debug("c(%c), e(%x)", c, e);
-	print_vector_8(self->rv);
+	// debug("c(%c), e(%x)", c, e);
+	// print_vector_8(self->rv);
 
 	/* forward pointer */
 	self->p += self->inc;
 	return((dz_fill_fetch_t){
 		.is_term = 0,
-		.ch      = e
+		.rch     = e
 	});
 }
 
 static __dz_vectorize
-__m128i dz_fill_get_profile_ascii(dz_fetcher_ascii_t *self, int8_t const *score_matrix, dz_query_t const *query, size_t qidx)
+__m128i dz_fill_get_profile_ascii(dz_fetcher_ascii_t const *self, int8_t const *score_matrix, dz_query_t const *query, size_t qidx)
 {
 	uint8_t const *packed = dz_query_packed_array(query);
 
@@ -458,46 +444,22 @@ __m128i dz_fill_get_profile_ascii(dz_fetcher_ascii_t *self, int8_t const *score_
 	__m128i const mv = _mm_load_si128((__m128i const *)score_matrix);
 	__m128i const sc = _mm_shuffle_epi8(mv, _mm_or_si128(self->rv, qv));
 
-	print_vector_8(qv);
+	// print_vector_8(qv);
 	// print_vector_8(mv);
 	// print_vector_8(sc);
 	return(_mm_cvtepi8_epi16(sc));
 }
 
 static __dz_vectorize
-dz_trace_match_t dz_trace_get_match_ascii(int8_t const *score_matrix, dz_query_t const *query, size_t qidx, uint32_t ch)
+dz_trace_match_t dz_trace_get_match_ascii(int8_t const *score_matrix, dz_query_t const *query, size_t qidx, uint32_t rch)
 {
 	uint8_t const *packed = dz_query_packed_array(query);
 
 	return((dz_trace_match_t){
-		.score = score_matrix[(packed[qidx] | ch) & 0x1f],
-		.match = packed[qidx] == (ch<<2)
+		.score = score_matrix[(packed[qidx] | rch) & 0x1f],
+		.match = packed[qidx] == (rch<<2)
 	});
 }
-
-#if defined(DZ_WRAPPED_API) && (DZ_WRAPPED_API != 0)
-static __dz_vectorize
-dz_state_t const *dz_extend_intl(dz_arena_t *mem, dz_profile_t const *profile, dz_query_t const *query, dz_state_t const **ff, size_t fcnt, char const *ref, size_t rlen, uint32_t dir)
-{
-	dz_fetcher_ascii_t w __attribute__(( aligned(16) ));
-	dz_fill_fetcher_init_ascii(&w, (uint8_t const *)ref, rlen, dir);
-
-	dz_fetcher_t fetcher = {
-		.opaque      = (void *)&w,
-		.fetch_next  = (dz_fill_fetch_next_t)dz_fill_fetch_next_ascii,
-		.get_profile = (dz_fill_get_profile_t)dz_fill_get_profile_ascii,
-		.get_bound   = NULL
-	};
-	return(dz_extend_core(mem, profile, query, &fetcher, ff, fcnt));
-}
-
-static __dz_vectorize
-dz_alignment_t const *dz_trace(dz_t *self, dz_forefront_t const *forefront)
-{
-	/* just wrap */
-	return(dz_trace_core(self->mem, self->profile, dz_cstate(forefront), (dz_trace_get_match_t)dz_trace_get_match_ascii));
-}
-#endif
 
 
 
@@ -542,17 +504,6 @@ __m128i dz_query_conv_2bit(int8_t const *score_matrix, uint32_t dir, __m128i v)
 	return(_mm_shuffle_epi8(cv, v));
 }
 
-static __dz_vectorize
-dz_query_t *dz_pack_query_intl(dz_t *self, char const *query, size_t qlen, uint32_t dir)
-{
-	dz_pack_query_t pack = {
-		.dir      = dir,
-		.calc_dim = dz_query_calc_dim_2bit,
-		.conv     = dz_query_conv_2bit
-	};
-	return(dz_pack_query_core(self->mem, self->profile, (uint8_t const *)query, qlen, &pack));
-}
-
 
 typedef struct {
 	__m128i rv;
@@ -578,7 +529,7 @@ dz_fill_fetch_t dz_fill_fetch_next_2bit(dz_fetcher_2bit_t *self, int8_t const *s
 	if(self->p == self->t) {
 		return((dz_fill_fetch_t){
 			.is_term = 1,
-			.ch      = 0
+			.rch     = 0
 		});
 	}
 
@@ -591,12 +542,12 @@ dz_fill_fetch_t dz_fill_fetch_next_2bit(dz_fetcher_2bit_t *self, int8_t const *s
 	self->p += self->inc;
 	return((dz_fill_fetch_t){
 		.is_term = 0,
-		.ch      = e
+		.rch     = e
 	});
 }
 
 static __dz_vectorize
-__m128i dz_fill_get_profile_2bit(dz_fetcher_2bit_t *self, int8_t const *score_matrix, dz_query_t const *query, size_t qidx)
+__m128i dz_fill_get_profile_2bit(dz_fetcher_2bit_t const *self, int8_t const *score_matrix, dz_query_t const *query, size_t qidx)
 {
 	uint8_t const *packed = dz_query_packed_array(query);
 
@@ -607,39 +558,15 @@ __m128i dz_fill_get_profile_2bit(dz_fetcher_2bit_t *self, int8_t const *score_ma
 }
 
 static __dz_vectorize
-dz_trace_match_t dz_trace_get_match_2bit(int8_t const *score_matrix, dz_query_t const *query, size_t qidx, uint32_t ch)
+dz_trace_match_t dz_trace_get_match_2bit(int8_t const *score_matrix, dz_query_t const *query, size_t qidx, uint32_t rch)
 {
 	uint8_t const *packed = dz_query_packed_array(query);
 
 	return((dz_trace_match_t){
-		.score = score_matrix[(packed[qidx] | ch) & 0x1f],
-		.match = packed[qidx] == (ch<<2)
+		.score = score_matrix[(packed[qidx] | rch) & 0x1f],
+		.match = packed[qidx] == (rch<<2)
 	});
 }
-
-#if defined(DZ_WRAPPED_API) && (DZ_WRAPPED_API != 0)
-static __dz_vectorize
-dz_state_t const *dz_extend_intl(dz_arena_t *mem, dz_profile_t const *profile, dz_query_t const *query, dz_state_t const **ff, size_t fcnt, char const *ref, size_t rlen, uint32_t dir)
-{
-	dz_fetcher_2bit_t w __attribute__(( aligned(16) ));
-	dz_fill_fetcher_init_2bit(&w, (uint8_t const *)ref, rlen, dir);
-
-	dz_fetcher_t fetcher = {
-		.opaque      = (void *)&w,
-		.fetch_next  = (dz_fill_fetch_next_t)dz_fill_fetch_next_2bit,
-		.get_profile = (dz_fill_get_profile_t)dz_fill_get_profile_2bit,
-		.get_bound   = NULL
-	};
-	return(dz_extend_core(mem, profile, query, &fetcher, ff, fcnt));
-}
-
-static __dz_vectorize
-dz_alignment_t const *dz_trace(dz_t *self, dz_forefront_t const *forefront)
-{
-	/* just wrap */
-	return(dz_trace_core(self->mem, self->profile, dz_cstate(forefront), (dz_trace_get_match_t)dz_trace_get_match_2bit));
-}
-#endif
 
 
 
@@ -701,17 +628,6 @@ __m128i dz_query_conv_4bit(int8_t const *score_matrix, uint32_t dir, __m128i v)
 	return(w);			/* complemented */
 }
 
-static __dz_vectorize
-dz_query_t *dz_pack_query_intl(dz_t *self, char const *query, size_t qlen, uint32_t dir)
-{
-	dz_pack_query_t pack = {
-		.dir      = dir,
-		.calc_dim = dz_query_calc_dim_4bit,
-		.conv     = dz_query_conv_4bit
-	};
-	return(dz_pack_query_core(self->mem, self->profile, (uint8_t const *)query, qlen, &pack));
-}
-
 
 typedef struct {
 	__m128i mv;
@@ -738,7 +654,7 @@ dz_fill_fetch_t dz_fill_fetch_next_4bit(dz_fetcher_4bit_t *self, int8_t const *s
 	if(self->p == self->t) {
 		return((dz_fill_fetch_t){
 			.is_term = 1,
-			.ch      = 0
+			.rch     = 0
 		});
 	}
 
@@ -751,12 +667,12 @@ dz_fill_fetch_t dz_fill_fetch_next_4bit(dz_fetcher_4bit_t *self, int8_t const *s
 	self->p += self->inc;
 	return((dz_fill_fetch_t){
 		.is_term = 0,
-		.ch      = e
+		.rch     = e
 	});
 }
 
 static __dz_vectorize
-__m128i dz_fill_get_profile_4bit(dz_fetcher_4bit_t *self, int8_t const *score_matrix, dz_query_t const *query, size_t qidx)
+__m128i dz_fill_get_profile_4bit(dz_fetcher_4bit_t const *self, int8_t const *score_matrix, dz_query_t const *query, size_t qidx)
 {
 	dz_unused(score_matrix);
 
@@ -768,39 +684,15 @@ __m128i dz_fill_get_profile_4bit(dz_fetcher_4bit_t *self, int8_t const *score_ma
 }
 
 static __dz_vectorize
-dz_trace_match_t dz_trace_get_match_4bit(int8_t const *score_matrix, dz_query_t const *query, size_t qidx, uint32_t ch)
+dz_trace_match_t dz_trace_get_match_4bit(int8_t const *score_matrix, dz_query_t const *query, size_t qidx, uint32_t rch)
 {
 	uint8_t const *packed = dz_query_packed_array(query);
 
 	return((dz_trace_match_t){
-		.score = score_matrix[ch * DZ_QUERY_MAT_SIZE + packed[qidx]],
-		.match = packed[qidx] == ch
+		.score = score_matrix[rch * DZ_QUERY_MAT_SIZE + packed[qidx]],
+		.match = packed[qidx] == rch
 	});
 }
-
-#if defined(DZ_WRAPPED_API) && (DZ_WRAPPED_API != 0)
-static __dz_vectorize
-dz_state_t const *dz_extend_intl(dz_arena_t *mem, dz_profile_t const *profile, dz_query_t const *query, dz_state_t const **ff, size_t fcnt, char const *ref, size_t rlen, uint32_t dir)
-{
-	dz_fetcher_4bit_t w __attribute__(( aligned(16) ));
-	dz_fill_fetcher_init_4bit(&w, (uint8_t const *)ref, rlen, dir);
-
-	dz_fetcher_t fetcher = {
-		.opaque      = (void *)&w,
-		.fetch_next  = (dz_fill_fetch_next_t)dz_fill_fetch_next_4bit,
-		.get_profile = (dz_fill_get_profile_t)dz_fill_get_profile_4bit,
-		.get_bound   = NULL
-	};
-	return(dz_extend_core(mem, profile, query, &fetcher, ff, fcnt));
-}
-
-static __dz_vectorize
-dz_alignment_t const *dz_trace(dz_t *self, dz_forefront_t const *forefront)
-{
-	/* just wrap */
-	return(dz_trace_core(self->mem, self->profile, dz_cstate(forefront), (dz_trace_get_match_t)dz_trace_get_match_4bit));
-}
-#endif
 
 
 
@@ -838,17 +730,6 @@ __m128i dz_query_conv_protein(int8_t const *score_matrix, uint32_t dir, __m128i 
 	return(tv);
 }
 
-static __dz_vectorize
-dz_query_t *dz_pack_query_intl(dz_t *self, char const *query, size_t qlen, uint32_t dir)
-{
-	dz_pack_query_t pack = {
-		.dir      = dir,
-		.calc_dim = dz_query_calc_dim_protein,
-		.conv     = dz_query_conv_protein
-	};
-	return(dz_pack_query_core(self->mem, self->profile, (uint8_t const *)query, qlen, &pack));
-}
-
 
 typedef struct {
 	uint8_t const *p, *t;
@@ -874,7 +755,7 @@ dz_fill_fetch_t dz_fill_fetch_next_protein(dz_fetcher_protein_t *self, int8_t co
 	if(self->p == self->t) {
 		return((dz_fill_fetch_t){
 			.is_term = 1,
-			.ch      = 0
+			.rch     = 0
 		});
 	}
 
@@ -887,12 +768,12 @@ dz_fill_fetch_t dz_fill_fetch_next_protein(dz_fetcher_protein_t *self, int8_t co
 	self->p += self->inc;
 	return((dz_fill_fetch_t){
 		.is_term = 0,
-		.ch      = e
+		.rch     = e
 	});
 }
 
 static __dz_vectorize
-__m128i dz_fill_get_profile_protein(dz_fetcher_protein_t *self, int8_t const *score_matrix, dz_query_t const *query, size_t qidx)
+__m128i dz_fill_get_profile_protein(dz_fetcher_protein_t const *self, int8_t const *score_matrix, dz_query_t const *query, size_t qidx)
 {
 	dz_unused(score_matrix);
 	dz_unused(query);
@@ -902,7 +783,7 @@ __m128i dz_fill_get_profile_protein(dz_fetcher_protein_t *self, int8_t const *sc
 }
 
 static __dz_vectorize
-dz_trace_match_t dz_trace_get_match_protein(int8_t const *score_matrix, dz_query_t const *query, size_t qidx, uint32_t ch)
+dz_trace_match_t dz_trace_get_match_protein(int8_t const *score_matrix, dz_query_t const *query, size_t qidx, uint32_t rch)
 {
 	dz_unused(score_matrix);
 
@@ -910,34 +791,10 @@ dz_trace_match_t dz_trace_get_match_protein(int8_t const *score_matrix, dz_query
 	uint8_t const *packed = dz_query_packed_array(query);
 
 	return((dz_trace_match_t){
-		.score =  packed[ch * dz_query_row_len(query) + qidx],
-		.match = (seq[qidx - 1] & 0x1f) == ch
+		.score =  packed[rch * dz_query_row_len(query) + qidx],
+		.match = (seq[qidx - 1] & 0x1f) == rch
 	});
 }
-
-#if defined(DZ_WRAPPED_API) && (DZ_WRAPPED_API != 0)
-static __dz_vectorize
-dz_state_t const *dz_extend_intl(dz_arena_t *mem, dz_profile_t const *profile, dz_query_t const *query, dz_state_t const **ff, size_t fcnt, char const *ref, size_t rlen, uint32_t dir)
-{
-	dz_fetcher_protein_t w __attribute__(( aligned(16) ));
-	dz_fill_fetcher_init_protein(&w, (uint8_t const *)ref, rlen, dir);
-
-	dz_fetcher_t fetcher = {
-		.opaque      = (void *)&w,
-		.fetch_next  = (dz_fill_fetch_next_t)dz_fill_fetch_next_protein,
-		.get_profile = (dz_fill_get_profile_t)dz_fill_get_profile_protein,
-		.get_bound   = NULL
-	};
-	return(dz_extend_core(mem, profile, query, &fetcher, ff, fcnt));
-}
-
-static __dz_vectorize
-dz_alignment_t const *dz_trace(dz_t *self, dz_forefront_t const *forefront)
-{
-	/* just wrap */
-	return(dz_trace_core(self->mem, self->profile, dz_cstate(forefront), (dz_trace_get_match_t)dz_trace_get_match_protein));
-}
-#endif
 
 
 
@@ -973,17 +830,6 @@ __m128i dz_query_conv_realigner(int8_t const *score_matrix, uint32_t dir, __m128
 	__m128i const cv = _mm_set1_epi8(dir ? 0x08 : 0x00);
 	__m128i const x  = _mm_shuffle_epi8(mv, _mm_or_si128(cv, v));
 	return(x);
-}
-
-static __dz_vectorize
-dz_query_t *dz_pack_query_intl(dz_t *self, char const *query, size_t qlen, uint32_t dir)
-{
-	dz_pack_query_t pack = {
-		.dir      = dir,
-		.calc_dim = dz_query_calc_dim_realigner,
-		.conv     = dz_query_conv_realigner
-	};
-	return(dz_pack_query_core(self->mem, self->profile, (uint8_t const *)query, qlen, &pack));
 }
 
 
@@ -1067,7 +913,7 @@ dz_fill_fetch_t dz_fill_fetch_next_realigner(dz_fetcher_realigner_t *self, int8_
 	if(self->p == NULL) {
 		return((dz_fill_fetch_t){
 			.is_term = 1,
-			.ch      = 0
+			.rch     = 0
 		});
 	}
 
@@ -1084,12 +930,12 @@ dz_fill_fetch_t dz_fill_fetch_next_realigner(dz_fetcher_realigner_t *self, int8_
 	self->p = link[self->dir];
 	return((dz_fill_fetch_t){
 		.is_term = 0,
-		.ch      = node->consensus_mask
+		.rch     = node->consensus_mask
 	});
 }
 
 static __dz_vectorize
-__m128i dz_fill_get_profile_realigner(dz_fetcher_realigner_t *self, int8_t const *score_matrix, dz_query_t const *query, size_t qidx)
+__m128i dz_fill_get_profile_realigner(dz_fetcher_realigner_t const *self, int8_t const *score_matrix, dz_query_t const *query, size_t qidx)
 {
 	dz_unused(score_matrix);
 
@@ -1113,7 +959,7 @@ dz_fill_bound_t dz_fill_get_bound_realigner(dz_fetcher_realigner_t *self)
 }
 
 static __dz_vectorize
-dz_trace_match_t dz_trace_get_match_realigner(int8_t const *score_matrix, dz_query_t const *query, size_t qidx, uint32_t ch)
+dz_trace_match_t dz_trace_get_match_realigner(int8_t const *score_matrix, dz_query_t const *query, size_t qidx, uint32_t rch)
 {
 	dz_unused(score_matrix);
 
@@ -1121,33 +967,9 @@ dz_trace_match_t dz_trace_get_match_realigner(int8_t const *score_matrix, dz_que
 
 	return((dz_trace_match_t){
 		.score = packed[2 * qidx],
-		.match = packed[2 * qidx] == 2 * ch
+		.match = packed[2 * qidx] == 2 * rch
 	});
 }
-
-#if defined(DZ_WRAPPED_API) && (DZ_WRAPPED_API != 0)
-static __dz_vectorize
-dz_state_t const *dz_extend_intl(dz_arena_t *mem, dz_profile_t const *profile, dz_query_t const *query, dz_state_t const **ff, size_t fcnt, char const *ref, size_t rlen, uint32_t dir)
-{
-	dz_fetcher_realigner_t w __attribute__(( aligned(16) ));
-	dz_fill_fetcher_init_realigner(&w, dir, (dz_realigner_node_t const *)ref);
-
-	dz_fetcher_t fetcher = {
-		.opaque      = (void *)&w,
-		.fetch_next  = (dz_fill_fetch_next_t)dz_fill_fetch_next_realigner,
-		.get_profile = (dz_fill_get_profile_t)dz_fill_get_profile_realigner,
-		.get_bound   = (dz_fill_get_bound_t)dz_fill_get_bound_realigner
-	};
-	return(dz_extend_core(mem, profile, query, &fetcher, ff, fcnt));
-}
-
-static __dz_vectorize
-dz_alignment_t const *dz_trace(dz_t *self, dz_forefront_t const *forefront)
-{
-	/* just wrap */
-	return(dz_trace_core(self->mem, self->profile, dz_cstate(forefront), (dz_trace_get_match_t)dz_trace_get_match_realigner));
-}
-#endif
 
 #endif
 
@@ -1332,7 +1154,7 @@ static __dz_force_inline
 uint64_t dz_arena_push_stack(dz_arena_t *mem, size_t size)
 {
 	debug("add_stack, ptr(%p)", mem->stack.curr->next);
-	if(mem->stack.curr->next == NULL) {
+	if(dz_unlikely(mem->stack.curr->next == NULL)) {
 		/* current stack is the forefront of the memory block chain, add new block */
 		size = dz_max2(
 			size + dz_roundup(sizeof(dz_arena_block_t), DZ_MEM_ALIGN_SIZE),
@@ -1361,7 +1183,7 @@ void *dz_arena_malloc(dz_arena_t *mem, size_t size)
 	size = dz_roundup(size, sizeof(__m128i));
 	debug("size(%zu), stack(%p, %p, %zu)", size, mem->stack.top, mem->stack.end, dz_arena_stack_rem(mem));
 
-	if(size > dz_arena_stack_rem(mem) || dz_arena_stack_rem(mem) < 4096) {
+	if(dz_unlikely(size > dz_arena_stack_rem(mem) || dz_arena_stack_rem(mem) < 4096)) {
 		dz_arena_push_stack(mem, size);
 	}
 	void *ptr = (void *)mem->stack.top;
@@ -1385,6 +1207,8 @@ uint64_t dz_arena_pop_stack(dz_arena_t *mem)
 	q->next = NULL;
 	return(1);
 }
+
+
 
 
 
@@ -1428,7 +1252,7 @@ static __dz_force_inline
 uint8_t *dz_reserve_stack(dz_arena_t *mem, size_t size)
 {
 	/* allocate from heap */
-	if(dz_arena_stack_rem(mem) < size) {
+	if(dz_unlikely(dz_arena_stack_rem(mem) < size)) {
 		dz_arena_push_stack(mem, 0);
 	}
 	return(mem->stack.top);
@@ -1440,6 +1264,7 @@ void dz_save_stack(dz_arena_t *mem, void *ptr)
 	mem->stack.top = (uint8_t *)ptr;
 	return;
 }
+
 
 
 
@@ -1455,16 +1280,22 @@ struct dz_profile_s {
 	struct dz_forefront_s const *root;
 
 	/* constants */
-	uint16_t xt, bonus, _pad, init;
-
-	uint32_t _pad2;
+	uint32_t one, xth;			/* (1, xth) */
 	uint32_t max_ins_len, max_del_len;
+
+	uint16_t bonus, init;
 	uint32_t size;				/* object size for copying */
 
 	int8_t matrix[];
 } /* dz_profile_t */;
 dz_static_assert(sizeof(dz_profile_t) % sizeof(__m128i) == 0);
 
+
+static __dz_vectorize
+uint64_t dz_profile_is_scan(dz_profile_t const *profile)
+{
+	return(profile->init != (uint16_t)dz_add_ofs(DZ_CELL_MIN));
+}
 
 
 
@@ -1477,7 +1308,8 @@ dz_static_assert(sizeof(dz_profile_t) % sizeof(__m128i) == 0);
  */
 /* typedef */
 struct dz_query_s {
-	size_t blen;		/* #vectors */
+	uint32_t bmax;		/* always INT32_MAX */
+	uint32_t blen;		/* #vectors */
 	uint8_t const *seq;	/* query string (encoded and aligned) */
 	int16_t bonus[2 * DZ_L];
 	uint8_t arr[];
@@ -1486,15 +1318,15 @@ dz_static_assert(sizeof(dz_query_t) % sizeof(__m128i) == 0);
 
 /* full-length bonus */
 static __dz_vectorize
-__m128i dz_query_get_bonus(dz_query_t const *query, size_t qblk)
+__m128i dz_query_get_bonus(dz_query_t const *query, uint64_t is_tail)
 {
 	#ifdef DZ_FULL_LENGTH_BONUS
 		__m128i const *pbonus = &((__m128i const *)query->arr)[-2];
-		__m128i const bv = _mm_load_si128(&pbonus[qblk == query->blen - 1]);
+		__m128i const bv = _mm_load_si128(&pbonus[is_tail]);
 
 	#else
 		dz_unused(query);
-		dz_unused(qblk);
+		dz_unused(is_tail);
 
 		__m128i const bv = _mm_setzero_si128();
 
@@ -1537,6 +1369,7 @@ dz_query_t *dz_pack_query_alloc_mem(dz_arena_t *mem, dz_profile_t const *profile
 
 	/* save length and seq pointers */
 	*q = (dz_query_t){
+		.bmax  = INT32_MAX,
 		.blen  = qlen == 0 ? 0 : (clen / DZ_L),
 		.seq   = query,
 		.bonus = { 0 }
@@ -1669,6 +1502,12 @@ size_t dz_pack_query_reverse_core(dz_query_t *q, dz_profile_t const *profile, ui
 static __dz_vectorize
 dz_query_t *dz_pack_query_core(dz_arena_t *mem, dz_profile_t const *profile, uint8_t const *query, size_t qlen, dz_pack_query_t const *pack)
 {
+	debugblock({
+		assert(qlen / DZ_L < INT32_MAX, "qlen(%zu)", qlen);
+	});
+	if(qlen >= (size_t)DZ_L * (size_t)INT32_MAX) { return(NULL); }
+
+
 	dz_query_t *q = dz_pack_query_alloc_mem(mem, profile, query, qlen, pack);
 	if(pack->dir) {
 		dz_pack_query_reverse_core(q, profile, query, qlen, pack);
@@ -1742,271 +1581,255 @@ dz_swgv_t dz_max_swgv(dz_swgv_t v, dz_swgv_t w)
 
 
 
-/* coordinate and match information for traceback */
+/*
+ * DP matrix outline info: consist of column range, column count, and score tracker
+ * exposed to API layer so that users can control DP extension seeing scores and ranges.
+ * merged object created at the beginning of dz_extend and converted to internal representations.
+ */
+
+/* score tracker */
 typedef struct {
-	uint16_t ch;		/* fetched char (after conversion) */
+	uint32_t inc;		/* with offset */
+	int32_t abs;		/* without offset */
+} dz_score_t;
+
+static __dz_vectorize
+int32_t dz_score_init(dz_score_t *score)
+{
+	/*
+	 * score->abs = 0;
+	 * score->inc = dz_add_ofs(0);
+	 */
+
+	dz_storeu_u64(score, dz_add_ofs(0));
+	return(0);
+}
+
+static __dz_vectorize
+int32_t dz_score_abs(dz_score_t const *score)
+{
+	return(score->abs);
+}
+
+static __dz_vectorize
+int32_t dz_score_base(dz_score_t const *score)
+{
+	return(score->abs - dz_rm_ofs(score->inc));
+}
+
+static __dz_vectorize
+int32_t dz_score_flush(dz_score_t *score)
+{
+	uint32_t const inc = score->inc;
+	score->abs += dz_rm_ofs(inc);		/* with offset; FIXME: fold tracker->adj ?? */
+	return(score->abs);
+}
+
+static __dz_vectorize
+uint32_t dz_score_rebase(dz_score_t *score)
+{
+	uint32_t const inc = score->inc;
+	score->abs += dz_rm_ofs(inc);
+	score->inc = dz_add_ofs(0);
+
+	debugblock({
+		// assert(dz_rm_ofs(inc) >= 0, "inc(%d)", dz_rm_ofs(inc));
+		assert(dz_rm_ofs(inc) <= UINT16_MAX, "inc(%d)", dz_rm_ofs(inc));
+	});
+	return((uint32_t)dz_rm_ofs(inc));	/* always positive */
+}
+
+
+
+
+/*
+ * coordinate and match information for traceback
+ */
+typedef struct {
+	uint16_t rch;		/* fetched char (after conversion) */
 	uint16_t adj;		/* difference of offset to the previous column */
 	uint32_t idx;		/* forwarded length */
-} dz_col_tracker_t;
+} dz_link_t;
+dz_static_assert(sizeof(dz_link_t) == 8);
 
-/* placed just after every score vector to indicate the length */
+
+static __dz_vectorize
+void dz_link_init_root(dz_link_t *link)
+{
+	/*
+	 * link->rch = DZ_HEAD_RCH | DZ_ROOT_RCH;
+	 * link->adj = 0;
+	 * link->idx = 0;	// no incoming vector for the root
+	 */
+
+	dz_storeu_u64(link, DZ_HEAD_RCH | DZ_ROOT_RCH);
+	return;
+}
+
+static __dz_vectorize
+void dz_link_init_intl(dz_link_t *link)
+{
+	/*
+	 * // still regarded as head
+	 * link->rch = DZ_HEAD_RCH | 0x01;		// to make the value different from head
+	 * link->adj = 0;
+	 * link->idx = 1;		// #incoming vectors == 1
+	 */
+
+	dz_storeu_u64(link, DZ_HEAD_RCH | 0x01 | (0x01ULL<<32));
+	return;
+}
+
+static __dz_vectorize
+void dz_link_init_head(dz_link_t *link, size_t fcnt)
+{
+	/*
+	 * link->rch = DZ_HEAD_RCH;
+	 * link->adj = 0;
+	 * link->idx = fcnt;	// save incoming vector count
+	 */
+
+	dz_storeu_u64(link, DZ_HEAD_RCH | ((uint64_t)fcnt<<32));
+	return;
+}
+
+static __dz_vectorize
+size_t dz_link_fcnt(dz_link_t const *link)
+{
+	return(link->idx);
+}
+
+static __dz_vectorize
+uint64_t dz_link_is_root(dz_link_t const *link)
+{
+	/* test for root tail */
+	return((link->rch & DZ_ROOT_RCH) != 0);
+}
+
+static __dz_vectorize
+uint64_t dz_link_is_intl(dz_link_t const *link)
+{
+	return(link->rch != DZ_HEAD_RCH);
+}
+
+static __dz_vectorize
+uint64_t dz_link_is_head(dz_link_t const *link)
+{
+	/* root or head */
+	return((link->rch & DZ_HEAD_RCH) != 0);
+}
+
+
+
+
+/*
+ * column range;
+ * placed just after every score vector to indicate the length
+ */
 typedef struct dz_range_s {
-	uint32_t sblk, eblk;/* uint32_t pair so that we can take max of ranges with pmaxud */
+	uint32_t sblk, eblk;	/* uint32_t pair so that we can take max of ranges with pmaxud */
 } dz_range_t;
 #define dz_range(_p)				( (dz_range_t *)(_p) )
 #define dz_crange(_p)				( (dz_range_t const *)(_p) )
 
-typedef struct {
-	uint32_t column;	/* column count */
-	uint32_t section;	/* section count */
-} dz_ref_cnt_t;
 
+/*
+ * range manipulation functions
+ */
+static __dz_vectorize
+uint64_t dz_range_is_head(dz_range_t const *r)
+{
+	return(r->sblk == 0);
+}
+
+static __dz_vectorize
+uint64_t dz_range_is_term(dz_range_t const *r)
+{
+	debug("test range(%u, %u)", r->sblk, r->eblk);
+	return(r->sblk >= r->eblk);
+}
+
+static __dz_vectorize
+uint64_t dz_range_is_bottom(dz_range_t const *r, uint32_t blen)
+{
+	return(r->eblk >= blen);
+}
+
+static __dz_vectorize
+uint64_t dz_range_shrink(dz_range_t *r)
+{
+	r->sblk++;
+	return(dz_range_is_term(r));
+}
+
+static __dz_vectorize
+uint64_t dz_range_extend(dz_range_t *r, uint32_t blen)
+{
+	r->eblk++;
+	return(dz_range_is_bottom(r, blen));
+}
+
+
+
+
+/*
+ * max tracker
+ */
 typedef struct {
-	int32_t score;		/* without offset */
-	uint32_t inc;		/* with offset */
-	struct dz_cap_s const *cap;
+	dz_score_t score;					/* score.abs is maximum of incoming scores (or zero in scan), score.inc be dz_add_ofs(0) */
+	struct dz_cap_s const *cap;			/* NULL on init */
 } dz_max_t;
 
-/* as working buffer */
-/* typedef */
-struct dz_state_s {
-	dz_range_t range;
-	dz_ref_cnt_t cnt;
-	dz_max_t max;
-} /* dz_state_t */;
-#define dz_pstate(_p)				( (dz_state_t **)(_p) )
-#define dz_cpstate(_p)				( (dz_state_t const **)(_p) )
-
-
-/* struct dz_forefront_s is alias of dz_state_t */
-/* typedef */
-struct dz_forefront_s {
-	dz_range_t range;
-	dz_ref_cnt_t cnt;
-	int32_t max, inc;
-	struct dz_cap_s const *cap;
-} /* dz_forefront_t */;
-dz_static_assert(sizeof(dz_forefront_t) == sizeof(dz_state_t));
-dz_static_assert(offsetof(dz_forefront_t, cnt)   == offsetof(dz_state_t, cnt));
-dz_static_assert(offsetof(dz_forefront_t, range) == offsetof(dz_state_t, range));
-dz_static_assert(offsetof(dz_forefront_t, max)   == offsetof(dz_state_t, max.score));
-
-/* pointer casting */
-#define dz_cff(_p)					( (dz_forefront_t const *)(_p) )
-#define dz_cpff(_p)					( (dz_forefront_t const **)(_p) )
-
-/* control */
-#define dz_profile_root(_profile)	( dz_cpff(&(_profile)->root) )
-#define dz_root(_self)				( dz_profile_root((_self)->profile) )
-
-/* X-drop */
-#define dz_is_terminated(_ff)		( dz_cff(_ff)->range.sblk >= dz_cff(_ff)->range.eblk )
-
-
-
-/* merge incoming vectors; using SIMD max to avoid test-and-branch */
-#if 1
-typedef struct {
-	__m128i range_cnt;	/* dz_range_t and dz_ref_cnt_t pair on xmm */
-	__m128i max;		/* dz_max_t on xmm */
-} dz_state_vec_t;
+static __dz_vectorize
+uint64_t dz_max_is_overflow(dz_max_t const *max)
+{
+	debug("inc(%u), thresh(%u)", max->score.inc, UINT16_MAX - DZ_OVERFLOW_MARGIN);
+	return(max->score.inc > (UINT16_MAX - DZ_OVERFLOW_MARGIN));
+}
 
 static __dz_vectorize
-dz_state_vec_t dz_merge_state_intl(dz_state_t const **ff, size_t fcnt)
+void dz_max_forward(dz_max_t *max, uint32_t fwd)
 {
-	/* for negating sblk to take min */
-	static int32_t const neg[4] __attribute__(( aligned(16) )) = { -1, 0, 0, 0 };
-	__m128i const negv = _mm_load_si128((__m128i const *)neg);
+	dz_unused(max);
+	dz_unused(fwd);
 
-	/* fold max; two working registers can be concatenated into __m256i */
-	__m128i range_cnt = _mm_setzero_si128();
-	__m128i max       = _mm_setzero_si128();
-	for(size_t i = 0; i < fcnt; i++) {
-		if(dz_is_terminated(ff[i])) { continue; }
+	return;
+}
 
-		/* load: sblk, eblk, ccnt, scnt */
-		__m128i const tv  = _mm_loadu_si128((__m128i const *)&ff[i]->range.sblk);
-		__m128i const rcv = _mm_xor_si128(tv, negv);	/* negate sblk */
+static __dz_vectorize
+uint32_t dz_max_rebase(dz_max_t *max)
+{
+	return(dz_score_rebase(&max->score));
+}
 
-		/* load: max.score */
-		__m128i const mv  = _mm_loadu_si128((__m128i const *)&ff[i]->max.score);
+static __dz_vectorize
+uint64_t dz_max_update(dz_max_t *max, struct dz_cap_s const *cap, uint32_t xth, uint32_t inc)
+{
+	/* update max; the actual score (absolute score accumulated from the origin) is expressed as max + inc; 2 x cmov */
+	debug("max(%u), (%u, %u)", inc, max->score.inc, max->score.abs);
 
-		/* update max vectors; signed max for score */
-		range_cnt = _mm_max_epu32(range_cnt, rcv);
-		max       = _mm_max_epi32(max,       mv);
+	/* with offset */
+	if(dz_cmp_max(inc, xth)) {
+		uint32_t const next_inc = inc + max->score.inc - xth;
+		debug("max updated, inc(%u, %u)", next_inc, inc);
 
-		debug("i(%zu), fcnt(%zu), ff(%p), range(%u, %u, %u, %u), ccnt(%u), scnt(%u), max(%d), inc(%d)",
-			i, fcnt, ff[i], ff[i]->range.sblk, ff[i]->range.eblk, (uint32_t)_mm_extract_epi32(range_cnt, 0), (uint32_t)_mm_extract_epi32(range_cnt, 1),
-			ff[i]->cnt.column, ff[i]->cnt.section, ff[i]->max.score, ff[i]->max.inc
-		);
+		max->score.inc = next_inc;
+		max->cap = cap;
 	}
-
-	return((dz_state_vec_t){
-		.range_cnt = _mm_xor_si128(range_cnt, negv),	/* flip sblk again before save */
-		.max       = _mm_and_si128(max,       negv)		/* clear out inc and cap */
-	});
-}
-
-static __dz_vectorize
-dz_state_t dz_merge_state(dz_state_t const **ff, size_t fcnt)
-{
-	/* (cap = NULL, inc = dz_add_ofs(0), score) */
-	static int32_t const init[4] __attribute__(( aligned(16) )) = { 0, dz_add_ofs(0), 0, 0 };
-	__m128i const iv = _mm_load_si128((__m128i const *)init);
-
-	/* merge */
-	dz_state_vec_t merged = dz_merge_state_intl(ff, fcnt);
-
-	/* save them all */
-	dz_state_t state __attribute__(( aligned(16) ));
-	_mm_store_si128((__m128i *)&state.range.sblk, merged.range_cnt);				/* (eblk, sblk, section, column) */
-	_mm_store_si128((__m128i *)&state.max.score,  _mm_add_epi32(iv, merged.max));	/* (cap = NULL, inc = dz_add_ofs(0), score) */
-
-	debug("merged state, range(%u, %u), ccnt(%u), scnt(%u), max(%d), inc(%d)",
-		state.range.sblk, state.range.eblk, state.cnt.column, state.cnt.section, state.max.score, state.max.inc
-	);
-	return(state);
-}
-#else
-static __dz_vectorize
-dz_state_t dz_merge_state(dz_state_t const **ff, size_t fcnt)
-{
-	/* load constant */
-	static int32_t const neg[4] __attribute__(( aligned(16) )) = { -1, 0, 0, 0 };	/* negate spos to take min */
-	__m128i const nv = _mm_load_si128((__m128i const *)neg);
-
-	/* working registers */
-	__m128i mv0 = nv;
-	__m128i mv1 = _mm_setzero_si128();
-
-	for(size_t i = 0; i < fcnt; i++) {
-		/* sblk, eblk, ccnt, scnt */
-		__m128i const v0 = _mm_loadu_si128((__m128i const *)&ff[i]->range.sblk);
-		mv0 = _mm_max_epu32(mv0, _mm_xor_si128(v0, nv));
-
-		/* max */
-		__m128i const v1 = _mm_loadu_si128((__m128i const *)&ff[i]->max.score);
-		mv1 = _mm_max_epu32(mv1, v1);
-
-		debug("i(%zu), fcnt(%zu), ff(%p), range(%u, %u), ccnt(%u), scnt(%u), max(%d), inc(%d)",
-			i, fcnt, ff[i], ff[i]->range.sblk, ff[i]->range.eblk, ff[i]->cnt.column, ff[i]->cnt.section, ff[i]->max.score, ff[i]->max.inc
-		);
-	}
-
-	/* save */
-	dz_state_t state __attribute__(( aligned(16) ));
-	_mm_store_si128((__m128i *)&state.range.sblk, _mm_xor_si128(mv0, nv));	/* (eblk, sblk, section, column) */
-	_mm_store_si128((__m128i *)&state.max.score,  _mm_and_si128(mv1, nv));	/* (cap = NULL, inc = 0, score) */
-	state.max.inc = dz_add_ofs(0);
-
-	debug("merged state, range(%u, %u), ccnt(%u), scnt(%u), max(%d), inc(%d)",
-		state.range.sblk, state.range.eblk, state.cnt.column, state.cnt.section, state.max.score, state.max.inc
-	);
-	return(state);
-}
-#endif
-
-static __dz_vectorize
-void dz_fixup_state(dz_state_t *state, dz_query_t const *query)
-{
-	state->range.eblk = dz_min2(state->range.eblk, query->blen);
-	return;
-}
-
-static __dz_vectorize
-void dz_finalize_state(dz_state_t *state, dz_col_tracker_t const *tracker)
-{
-	size_t const cols  = tracker->idx;
-	state->cnt.column += cols;
-	state->cnt.section++;
-
-	uint32_t const inc = state->max.inc;		/* with offset; FIXME: fold tracker->adj ?? */
-	state->max.score += dz_rm_ofs(inc);
-	debug("idx(%zu), score(%d), inc(%u)", cols, state->max.score, inc);
-	return;
-}
-
-
-/* working buffer */
-typedef struct {
-	/* constants */
-	__m128i minv;		/* dz_add_ofs(DZ_CELL_MIN) */
-	__m128i ofsv;
-
-	/* working vectors */
-	__m128i iiv;		/* gap (insertion) open penalty */
-	__m128i iev1, iev2, iev4, iev8;		/* insertion extension penalty x { 1, 2, 4, 8 } for vertical chaining */
-	__m128i div, dev;	/* gap (deletion) open and extension penalty */
-
-	/* constants (contd; X-drop threshold) */
-	uint16_t xt, _pad[6], init;
-
-	/* incoming matrices */
-	struct {
-		dz_state_t const **ptr;
-		size_t cnt;
-	} incoming;
-
-	/* states */
-	dz_state_t state;
-	dz_col_tracker_t tracker;
-} dz_work_t;
-
-static __dz_vectorize
-void dz_load_state(dz_work_t *w, dz_state_t const **ff, size_t fcnt)
-{
-	/* save pointer */
-	w->incoming.ptr = ff;
-	w->incoming.cnt = fcnt;
-
-	/* init column state */
-	w->tracker.ch  = DZ_HEAD_RCH;
-	w->tracker.adj = 0;
-	w->tracker.idx = 0;
-
-	/* merge state (before merging vectors) */
-	w->state = dz_merge_state(ff, fcnt);
-	return;
-}
-
-static __dz_vectorize
-void dz_load_score_vector(dz_work_t *w, dz_profile_t const *profile)
-{
-	/* constant */
-	w->minv = _mm_set1_epi16(dz_add_ofs(DZ_CELL_MIN));
-	w->ofsv = _mm_set1_epi16(DZ_SCORE_OFS);
-
-	/* insertion penalties */
-	__m128i const iev = _mm_load_si128((__m128i const *)profile->iev);
-	w->iiv  = _mm_load_si128((__m128i const *)profile->iiv);
-	w->iev1 = iev;
-	w->iev2 = _mm_add_epi16(iev, iev);
-	w->iev4 = _mm_slli_epi16(iev, 2);
-	w->iev8 = _mm_slli_epi16(iev, 3);
-
-	/* deletion penalties */
-	w->div  = _mm_load_si128((__m128i const *)profile->div);
-	w->dev  = _mm_load_si128((__m128i const *)profile->dev);
-
-	/* X-drop threshold */
-	w->xt   = profile->xt;
-	w->init = profile->init;
-	return;
+	return(dz_max_is_overflow(max));
 }
 
 
 
 
-/* DP matrix scaffolds */
+/*
+ * DP matrix scaffolds
+ */
 
 /* placed at the head */
 typedef struct dz_head_s {
-	int32_t base;		/* base score; always positive */
-	uint32_t zero;		/* always zero */
-
-	uint16_t magic;		/* DZ_HEAD_RCH for merged head; internal link otherwise */
-	uint16_t zero2;
-	uint32_t fcnt;		/* #merged vectors (n_forefronts) */
+	dz_score_t base;	/* base score; always positive */
+	dz_link_t link;
 } dz_head_t;
 #define dz_head(_p)					( (dz_head_t *)(_p) )
 #define dz_chead(_p)				( (dz_head_t const *)(_p) )
@@ -2014,151 +1837,42 @@ typedef struct dz_head_s {
 /* followed by dz_tail_t; sblk and eblk are shared to forefront_s */
 typedef struct dz_cap_s {
 	dz_range_t range;	/* column range */
-	dz_col_tracker_t tracker;		/* ch, adj, idx */
+	dz_link_t link;		/* rch, adj, idx */
 } dz_cap_t;
 dz_static_assert(sizeof(dz_cap_t) % sizeof(__m128i) == 0);
 #define dz_cap(_p)					( (dz_cap_t *)(_p) )
 #define dz_ccap(_p)					( (dz_cap_t const *)(_p) )
 
 /* dz_head_t and dz_cap_t are compatibile for head two elements */
-dz_static_assert(offsetof(dz_head_t, magic) == offsetof(dz_cap_t, tracker.ch));
-dz_static_assert(offsetof(dz_head_t, zero)  == offsetof(dz_cap_t, range.eblk));
-
-/* DP matrix object (exported) */
-typedef struct dz_tail_s {
-	dz_state_t state;
-	dz_query_t const *query;
-} dz_tail_t;
-// dz_static_assert(sizeof(dz_tail_t) % sizeof(__m128i) == 0);
-#define dz_tail(_p)			( (dz_tail_t *)(_p) )
-#define dz_ctail(_p)		( (dz_tail_t const *)(_p) )
+dz_static_assert(offsetof(dz_head_t, link) == offsetof(dz_cap_t, link));
+dz_static_assert(offsetof(dz_head_t, base) == offsetof(dz_cap_t, range));
 
 
 
-
-
-/* metadata handling */
 #if defined(DZ_WRAPPED_API) && (DZ_WRAPPED_API != 0)
-
-static dz_tail_t const *dz_restore_tail(dz_state_t const *ff);
-
-/* reference sequence metadata (will not be exposed outside) */
-typedef struct dz_meta_s {
-	uint32_t rid, dir;
-} dz_meta_t;
-#define dz_meta(_p)					( (dz_meta_t *)(_p) )
-#define dz_cmeta(_p)				( (dz_meta_t const *)(_p) )
-#define DZ_TAIL_MARGIN				( sizeof(dz_meta_t) )
-
-static __dz_vectorize
-void dz_save_meta(dz_state_t const *ff, dz_meta_t meta)
-{
-	dz_tail_t const *tail = dz_restore_tail(ff);
-	dz_meta_t *p = dz_meta(tail + 1);
-	*p = meta;
-	return;
-}
-
-static __dz_vectorize
-dz_meta_t dz_extract_meta(dz_tail_t const *tail)
-{
-	dz_meta_t const *p = dz_cmeta(tail + 1);
-	dz_meta_t meta = *p;
-	return(meta);
-}
-
-static __dz_vectorize
-uint32_t dz_extract_id(dz_tail_t const *tail)
-{
-	dz_meta_t const *p = dz_cmeta(tail + 1);
-	return(p->rid);
-}
-
+#  define DZ_TAIL_MARGIN				( 32 + 16 )
 #else
-
-#define DZ_TAIL_MARGIN				( 0 )
-static __dz_vectorize
-uint32_t dz_extract_id(dz_tail_t const *tail)
-{
-	dz_unused(tail);
-	return(0);
-}
-
-#endif	/* DZ_WRAPPED_API */
-
+#  define DZ_TAIL_MARGIN				( 32 )
+#endif
 
 
 
 /* scaffold handling */
-
 static __dz_force_inline
-size_t dz_calc_column_size(size_t sblk, size_t eblk)
+size_t dz_calc_column_size(dz_range_t const *range)
 {
-	size_t const span = eblk - sblk;
-	size_t const column_size = sizeof(dz_swgv_t) * (span + dz_max2(span, 8));
+	size_t const span = range->eblk - range->sblk;
+	size_t const column_size = sizeof(dz_swgv_t) * (span + 8);
 	size_t const size = (
 		  sizeof(dz_cap_t)	/* header size */
 		+ column_size		/* estimated column size */
-		+ sizeof(dz_state_t)	/* tail cap */
-		+ DZ_TAIL_MARGIN	/* metadata */
+		+ DZ_TAIL_MARGIN	/* tail cap and metadata */
 	);
 	return(size);
 }
 
 static __dz_vectorize
-dz_swgv_t *dz_init_root_head(dz_head_t *head)
-{
-	head->base  = 0;
-	head->zero  = 0;		/* is_head */
-
-	head->magic = DZ_ROOT_RCH | DZ_HEAD_RCH;
-	head->zero2 = 0;
-	head->fcnt  = 0;		/* is_root */
-	return(dz_swgv(head + 1));
-}
-
-static __dz_vectorize
-uint64_t dz_is_root(dz_cap_t const *cap)
-{
-	/* test for root tail */
-	// return(cap->range.eblk == 0);
-	return((dz_chead(cap)->magic & DZ_ROOT_RCH) != 0);
-}
-
-static __dz_vectorize
-dz_cap_t *dz_slice_head(dz_work_t *w, dz_arena_t *mem)
-{
-	/* forefront pointer array size */
-	size_t const fsize = dz_roundup(
-		sizeof(dz_state_t *) * w->incoming.cnt,
-		sizeof(__m128i)
-	);
-
-	/* column size (including head and internal caps) */
-	size_t const csize = dz_calc_column_size(w->state.range.sblk, w->state.range.eblk);
-
-	/* allocate mem */
-	dz_head_t *head = dz_head(dz_add_ptr(dz_reserve_stack(mem, fsize + csize), fsize));
-	debug("csize(%zu), fsize(%zu), stack(%p, %p, %zu), head(%p)", csize, fsize, mem->stack.top, mem->stack.end, dz_arena_stack_rem(mem), head);
-
-	/* fill magic numbers */
-	head->magic = DZ_HEAD_RCH;
-	head->zero  = 0;		/* overlaps range.eblk */
-
-	/* push head-cap info */
-	head->fcnt  = w->incoming.cnt;
-	head->base  = w->state.max.score;	/* save merging adjustment */
-	return(dz_cap(head));
-}
-
-static __dz_vectorize
-uint64_t dz_is_head(dz_cap_t const *cap)
-{
-	return((dz_chead(cap)->magic & DZ_HEAD_RCH) != 0);
-}
-
-static __dz_vectorize
-void dz_save_incoming(dz_cap_t *head, dz_state_t const **ff, size_t fcnt)
+void dz_save_incoming(dz_head_t *head, dz_state_t const **ff, size_t fcnt)
 {
 	dz_state_t const **q = dz_cpstate(head) - fcnt;
 	for(size_t i = 0; i < fcnt; i++) {
@@ -2167,6 +1881,65 @@ void dz_save_incoming(dz_cap_t *head, dz_state_t const **ff, size_t fcnt)
 	}
 	return;
 }
+
+static __dz_vectorize
+dz_head_t *dz_slice_head(dz_arena_t *mem, dz_range_t const *range, dz_state_t const **ff, size_t fcnt)
+{
+	dz_unused(ff);
+
+	/* forefront pointer array size */
+	size_t const fsize = dz_roundup(
+		sizeof(dz_state_t *) * fcnt,
+		sizeof(__m128i)
+	);
+
+	/* column size (including head and internal caps) */
+	size_t const csize = dz_calc_column_size(range);
+
+	/* allocate mem */
+	dz_head_t *head = dz_head(dz_add_ptr(dz_reserve_stack(mem, fsize + csize), fsize));
+	debug("csize(%zu), fsize(%zu), stack(%p, %p, %zu), head(%p)", csize, fsize, mem->stack.top, mem->stack.end, dz_arena_stack_rem(mem), head);
+	return(head);
+}
+
+static __dz_vectorize
+dz_cap_t *dz_init_head(dz_head_t *head, dz_max_t const *max, dz_state_t const **ff, size_t fcnt)
+{
+	dz_unused(ff);
+
+	/* save current max as base */
+	uint64_t const x = dz_loadu_u64(&max->score);
+	dz_storeu_u64(&head->base, x);		/* inc contains offset */
+
+	/* mark head */
+	dz_link_init_head(&head->link, fcnt);
+	return(dz_cap(head));
+}
+
+static __dz_vectorize
+dz_cap_t *dz_init_root_head(dz_head_t *head)
+{
+	/* clear score */
+	dz_score_init(&head->base);
+
+	/* mark root */
+	dz_link_init_root(&head->link);
+	return(dz_cap(head));
+}
+
+static __dz_vectorize
+uint64_t dz_is_head(dz_cap_t const *cap)
+{
+	return(dz_link_is_head(&cap->link));
+}
+
+static __dz_vectorize
+uint64_t dz_is_root(dz_cap_t const *cap)
+{
+	return(dz_link_is_root(&cap->link));
+}
+
+
 
 
 /* ping-pong pointer conversion between dz_cap_t and dz_swgv_t */
@@ -2199,154 +1972,796 @@ dz_cap_t const *dz_unwind_cap(dz_cap_t const *cap)
 }
 
 
-static __dz_vectorize
-dz_state_t const *dz_slice_tail(dz_work_t *w, dz_swgv_t *col, dz_arena_t *mem, dz_query_t const *query)
-{
-	dz_tail_t *tail = dz_tail(dz_cap_column(col, w->state.range.eblk));
-	debug("col(%p), range(%u, %u), tail(%p, %p)", col, w->state.range.sblk, w->state.range.eblk, tail, &tail->state);
-
-	/* just copy */
-	tail->state = w->state;
-	tail->query = query;
-
-	/* write back stack pointer */
-	size_t const size = dz_roundup(
-		sizeof(dz_tail_t) + DZ_TAIL_MARGIN,		/* make room for metadata */
-		sizeof(__m128i)
-	);
-	dz_save_stack(mem, dz_add_ptr(tail, size));
-	return(&tail->state);
-}
-
-static __dz_vectorize
-dz_tail_t const *dz_restore_tail(dz_state_t const *ff)
-{
-	return(dz_ctail(dz_sub_ptr(ff, offsetof(dz_tail_t, state))));
-}
-
-static __dz_vectorize
-dz_swgv_t const *dz_restore_tail_column(dz_state_t const *ff)
-{
-	dz_tail_t const *tail = dz_restore_tail(ff);
-	debug("tail(%p, %p), range(%u, %u), col(%p)", tail, ff, ff->range.sblk, ff->range.eblk, dz_cswgv(tail) - tail->state.range.eblk);
-	return(dz_cswgv(tail) - tail->state.range.eblk);
-}
 
 
 /* internal link (ilink) */
 static __dz_vectorize
-dz_swgv_t *dz_slice_ilink(dz_cap_t const *prev_cap, uint8_t *ptr)
+dz_swgv_t *dz_slice_ilink(uint8_t *ptr, dz_cap_t const *prev_cap)
 {
 	/* save link */
 	dz_state_t const **ff = ((dz_state_t const **)ptr) + 2;
-	ff[-1] = dz_state(&prev_cap->range);
+	ff[-1] = dz_cstate(&prev_cap->range);
 
-	/* save head info */
+	/* slice head */
 	dz_head_t *head = dz_head(ff);
-	head->base  = 0;
-	head->zero  = 0;
 
-	/* overlaps with dz_col_tracker_t */
-	head->magic = DZ_HEAD_RCH + 1;	/* to make the value different from head */
-	head->zero2 = 0;
-	head->fcnt  = 1;		/* #incoming vectors == 1 */
+	/* score and link */
+	dz_score_init(&head->base);
+	dz_link_init_intl(&head->link);		/* #incoming vectors == 1 */
+
+	/* slice column */
 	return(dz_swgv(head + 1));
 }
 
 static __dz_vectorize
 uint64_t dz_is_ilink(dz_cap_t const *cap)
 {
-	return(cap->tracker.ch != DZ_HEAD_RCH);
+	return(dz_link_is_intl(&cap->link));
 }
 
 static __dz_vectorize
 dz_cap_t const *dz_rewind_ilink(dz_cap_t const *cap)
 {
 	dz_state_t const **ff = dz_cpstate(cap);
-	return(dz_ccap(dz_restore_tail(ff[-1])));
+	return(dz_ccap(ff[-1]));
+}
+
+
+
+
+/*
+ * column tracker
+ * dz_ref_cnt_t is only used in tail caps, which is converted from dz_link_t
+ */
+typedef struct {
+	uint32_t section;		/* section count */
+	uint32_t column;		/* column count */
+} dz_ref_cnt_t;
+
+/*
+ * dz_state_t is internally used as DP matrix object.
+ */
+struct dz_state_s {
+	dz_range_t range;
+	dz_ref_cnt_t cnt;
+	dz_max_t max;
+} /* dz_state_t */;
+
+/* dz_state_t and dz_cap_t are compatibile */
+dz_static_assert(offsetof(dz_state_t, range)      == offsetof(dz_cap_t, range));
+dz_static_assert(offsetof(dz_state_t, cnt.column) == offsetof(dz_cap_t, link.idx));
+
+
+/*
+ * to take min between eblk and blen
+ */
+dz_static_assert(offsetof(dz_query_t, blen) == offsetof(dz_state_t, range.eblk));
+
+
+static __dz_vectorize
+dz_state_t *dz_slice_tail(dz_arena_t *mem, dz_swgv_t *col, size_t eblk)
+{
+	dz_state_t *tail = dz_state(dz_cap_column(col, eblk));
+
+	/* write back stack pointer */
+	size_t const size = dz_roundup(
+		DZ_TAIL_MARGIN,		/* make room for tail and metadata */
+		sizeof(__m128i)
+	);
+	dz_save_stack(mem, dz_add_ptr(tail, size));
+	return(tail);
 }
 
 static __dz_vectorize
-dz_swgv_t *dz_slice_cap_core(dz_work_t *w, dz_swgv_t *prev_col, dz_arena_t *mem)
+dz_swgv_t const *dz_restore_tail_column(dz_state_t const *tail)
 {
-	dz_cap_t *cap = dz_cap_column(prev_col, w->state.range.eblk);
-	debug("prev_col(%p), cap(%p), range(%u, %u), tracker(%u, %u)", prev_col, cap, w->state.range.sblk, w->state.range.eblk, w->tracker.ch, w->tracker.idx);
+	debug("tail(%p), range(%u, %u), col(%p)", tail, tail->range.sblk, tail->range.eblk, dz_cswgv(tail) - tail->range.eblk);
+	return(dz_cswgv(tail) - tail->range.eblk);
+}
 
-	/* save column tracker and range for traceback */
-	cap->range   = w->state.range;
-	cap->tracker = w->tracker;			/* char saved; adj cleared; column count (idx) saved */
-	dz_save_stack(mem, cap + 1);		/* save stack pointer */
+
+
+
+/*
+ * dz_forefront_t is alias of dz_state_t, only for backward compatibility.
+ */
+struct dz_forefront_s {
+	dz_range_t range;
+	dz_ref_cnt_t cnt;
+
+	/* score exposed outside */
+	uint32_t inc;
+	int32_t max;
+
+	dz_cap_t const *cap;
+} /* dz_forefront_t */;
+
+/*
+ * for backward compatibility
+ */
+dz_static_assert(sizeof(dz_forefront_t) == sizeof(dz_state_t));
+dz_static_assert(offsetof(dz_forefront_t, cnt)   == offsetof(dz_state_t, cnt));
+dz_static_assert(offsetof(dz_forefront_t, range) == offsetof(dz_state_t, range));
+dz_static_assert(offsetof(dz_forefront_t, max)   == offsetof(dz_state_t, max.score.abs));
+
+
+/* pointer casting */
+#define dz_cff(_p)					( (dz_forefront_t const *)(_p) )
+#define dz_cpff(_p)					( (dz_forefront_t const **)(_p) )
+
+/* APIs: control */
+#define dz_profile_root(_profile)	( dz_cpff(&(_profile)->root) )
+#define dz_root(_self)				( dz_profile_root((_self)->profile) )
+
+/* APIs: X-drop */
+#define dz_is_terminated(_ff)		( dz_cff(_ff)->range.sblk >= dz_cff(_ff)->range.eblk )
+
+
+
+
+/*
+ * dz_state_merge_core_t is internal representation of dz_state_t while DP filling.
+ */
+typedef struct {
+	__m128i range_cnt;	/* dz_range_t and dz_ref_cnt_t pair on xmm */
+	__m128i max;		/* dz_max_t on xmm */
+} dz_state_merge_core_t;
+
+typedef struct {
+	__m128i range_cnt;	/* dz_range_t and dz_ref_cnt_t pair on xmm */
+	__m128i max;		/* dz_max_t on xmm */
+	__m128i blen;
+} dz_state_merge_t;
+
+
+/*
+ * assumptions for dz_state_merge_core, dz_state_patch_score, and dz_state_patch_blen
+ */
+dz_static_assert(offsetof(dz_state_t, range.sblk) == 0);
+dz_static_assert(offsetof(dz_state_t, range.eblk) == 4);
+dz_static_assert(offsetof(dz_state_t, max.score.inc) == 16);
+dz_static_assert(offsetof(dz_state_t, max.score.abs) == 20);
+
+/*
+ * merge incoming vectors; using SIMD max to avoid test-and-branch
+ */
+static __dz_vectorize
+dz_state_merge_core_t dz_state_merge_core(dz_state_t const **ff, size_t fcnt)
+{
+	/* for negating sblk to take min */
+	__m128i negv = _mm_cvtsi64_si128(INT32_MAX);	/* INT32_MAX, 0, 0, 0 */
+
+	/* init accumulators */
+	__m128i range_cnt = _mm_setzero_si128();		/* zeros */
+	__m128i max       = negv;						/* INT32_MAX, 0, 0, 0 */
+
+	/* fold max */
+	for(size_t i = 0; i < fcnt; i++) {
+		if(dz_is_terminated(ff[i])) { continue; }
+
+		/*
+		 * load:
+		 * (sblk, eblk, ccnt, scnt) and
+		 * (max.score, max.inc, -, -)
+		 */
+		__m128i const tv  = _mm_loadu_si128((__m128i const *)&ff[i]->range.sblk);
+		__m128i const mv  = _mm_loadu_si128((__m128i const *)&ff[i]->max.score);
+
+		/* negate sblk so that we can use pmind to take the minimum of them */
+		__m128i const rcv = _mm_xor_si128(tv, negv);
+
+		/*
+		 * fold vectors;
+		 * unsigned max for coordinates and counters; signed max for scores
+		 */
+		range_cnt = _mm_max_epi32(range_cnt, rcv);
+		max       = _mm_max_epi32(max,       mv);	/* score.inc is kept INT32_MAX */
+	}
+
+	/* flip sblk again before save */
+	return((dz_state_merge_core_t){
+		.range_cnt = _mm_xor_si128(range_cnt, negv),
+		.max       = max
+	});
+}
+
+static __dz_vectorize
+__m128i dz_state_patch_blen(__m128i range_cnt, __m128i blen)
+{
+	/* clip range by query length; load blen at uint32_t[1] of query object */
+	__m128i const blv = _mm_shuffle_epi32(blen, 0x04);	/* (UINT32_MAX, UINT32_MAX, blen, UINT32_MAX) */
+
+	__m128i const patched = _mm_min_epi32(range_cnt, blv);
+	return(patched);
+}
+
+static __dz_vectorize
+__m128i dz_state_patch_score(__m128i max, uint64_t is_scan)
+{
+	/*
+	 * create mask: (-is_scan, 0, 0, 0) so that score.max to be squashed out when is_scan == true.
+	 */
+	uint64_t const magic = dz_add_ofs(0) + 0xffffffff00000000;	/* (0xffffffff, 0x8000) */
+	uint64_t const mask  = magic + (is_scan<<32);				/* clear upper 32bit if in the scan mode */
+	__m128i const mv = _mm_cvtsi64_si128(mask);				/* (0x8000, -is_scan, 0, 0) */
+
+	/* clear out inc and cap */
+	__m128i const patched = _mm_and_si128(max, mv);	/* reset inc, clear out abs if in scan, clear col pointer */
+	return(patched);
+}
+
+static __dz_vectorize
+dz_state_merge_t dz_state_merge(dz_query_t const *query, dz_state_t const **ff, size_t fcnt, uint64_t is_scan)
+{
+	/* merge */
+	dz_state_merge_core_t const merged = dz_state_merge_core(ff, fcnt);
+
+	/* load blen for clipping */
+	__m128i const blen = _mm_loadl_epi64((__m128i const *)query);
+
+	/* clip range and reset score */
+	return((dz_state_merge_t){
+		.range_cnt = dz_state_patch_blen(merged.range_cnt, blen),
+		.max       = dz_state_patch_score(merged.max, is_scan),
+		.blen      = blen
+	});
+}
+
+
+
+
+/*
+ * working space
+ */
+typedef struct {
+	/* 16bytes */
+	dz_range_t range;
+	dz_ref_cnt_t cnt;
+
+	/* 16bytes */
+	dz_max_t max;
+
+	/* 16bytes */
+	uint32_t bmax, blen;
+	dz_link_t link;
+
+	/* 16bytes */
+	uint32_t one;		/* we expect we have 0x01ULL here */
+	uint32_t xth;		/* xdrop threshold */
+	uint32_t zero[2];
+} dz_ctx_t;
+
+
+/*
+ * assumptions for dz_ctx_init and dz_ctx_finalize
+ */
+dz_static_assert(offsetof(dz_ctx_t, range) == offsetof(dz_state_t, range));
+dz_static_assert(offsetof(dz_ctx_t, cnt)   == offsetof(dz_state_t, cnt));
+dz_static_assert(offsetof(dz_ctx_t, max)   == offsetof(dz_state_t, max));
+dz_static_assert(offsetof(dz_ctx_t, cnt.section) == 8);
+dz_static_assert(offsetof(dz_ctx_t, cnt.column)  == 12);
+dz_static_assert(offsetof(dz_ctx_t, max.score.inc) == 16);
+dz_static_assert(offsetof(dz_ctx_t, max.score.abs) == 20);
+dz_static_assert(offsetof(dz_ctx_t, link.idx) == 44);
+dz_static_assert(offsetof(dz_ctx_t, one)      == 48);
+
+dz_static_assert(offsetof(dz_profile_t, xth) - offsetof(dz_profile_t, one) == 4);
+
+
+static __dz_vectorize
+void dz_ctx_init(dz_ctx_t *ctx, dz_state_merge_t const merged, dz_profile_t const *profile)
+{
+	/* transmute dz_state_merge_t -> dz_ctx_t */
+	_mm_store_si128((__m128i *)&ctx->range, merged.range_cnt);
+	_mm_store_si128((__m128i *)&ctx->max,   merged.max);
+	_mm_store_si128((__m128i *)&ctx->bmax,  merged.blen);		/* (UINT32_MAX, blen, 0, 0) */
+
+	/* we expect upper 64bit is always cleared out; and we have 0x8000 in the lowest 32bit */
+	__m128i const one_xth = _mm_loadl_epi64((__m128i const *)&profile->one);
+	_mm_store_si128((__m128i *)&ctx->one, one_xth);	/* clear out upper 64bits; dz_link_t */
+	return;
+}
+
+static __dz_vectorize
+void dz_ctx_finalize(dz_ctx_t const *ctx, dz_state_t *tail)
+{
+	__m128i const range_cnt = _mm_load_si128((__m128i const *)&ctx->range);
+	__m128i const max       = _mm_load_si128((__m128i const *)&ctx->max);
+	__m128i const one_link  = _mm_load_si128((__m128i const *)&ctx->one);
+
+	/*
+	 * accumulate score.inc over score.abs
+	 */
+	__m128i const ofs = _mm_cvtsi64_si128(dz_add_ofs(0));
+	__m128i const raw = _mm_sub_epi32(max, ofs);		/* subtract offset from inc */
+	__m128i const inc = _mm_srli_si128(
+		_mm_slli_si128(raw, 12),		/* <<12 to push the others out */
+		8								/* >>8 to align to max.score.abs; all the other columns are zero */
+	);
+
+	/*
+	 * accumulate link.cnt over cnt.column; increment cnt.section
+	 */
+	__m128i const cnt = _mm_slli_si128(
+		_mm_shuffle_epi32(one_link, 0x0c),	/* (-, -, link.cnt, one) */
+		8								/* <<8 to insert zeros and align to (cnt.column, cnt.section) */
+	);
+
+	dz_state_merge_core_t const v = {
+		.range_cnt = _mm_add_epi32(range_cnt, cnt),
+		.max       = _mm_add_epi32(max, inc)
+	};
+	_mm_storeu_si128((__m128i *)&tail->range, v.range_cnt);
+	_mm_storeu_si128((__m128i *)&tail->max,   v.max);
+
+	debug("rebase, inc(%d, %d), max(%d, %d)",
+		_mm_extract_epi32(max, 0), _mm_extract_epi32(raw, 0),
+		_mm_extract_epi32(max, 1), _mm_extract_epi32(v.max, 1)
+	);
+	return;
+}
+
+
+
+
+/*
+ * max tracker
+ */
+typedef struct {
+	__m128i maxv, xthv;
+} dz_maxv_work_t;
+
+/* X-drop and maximum tracking */
+static __dz_vectorize
+void dz_maxv_init_intl(dz_maxv_work_t *v, uint32_t inc, uint32_t xth)
+{
+	/* zero */
+	uint16_t const min = dz_add_ofs(DZ_CELL_MIN);
+
+	v->maxv = _mm_set1_epi16(min);
+	v->xthv = _mm_set1_epi16(inc - xth);	/* offset already included; next offset == current max thus X-drop threshold is always -xth */
+	return;
+}
+
+static __dz_vectorize
+void dz_maxv_init(dz_maxv_work_t *v, dz_max_t const *t, uint32_t xth)
+{
+	/* actual DP value = base (implicit) + j * ge + cell value */
+	uint32_t const inc = t->score.inc;	/* with offset */
+
+	dz_maxv_init_intl(v, inc, xth);
+	return;
+}
+
+static __dz_vectorize
+void dz_maxv_forward(dz_maxv_work_t *v)
+{
+	/* do nothing; for compatibility between offset DP */
+	dz_unused(v);
+	return;
+}
+
+static __dz_vectorize
+uint64_t dz_maxv_is_drop(dz_maxv_work_t const *v, __m128i sv)
+{
+	/* maxv contains clip(curr_max - (prev_max - xdrop_threshold)) where clip(x) = x if x > 0 else 0 */
+	__m128i const xtest = _mm_subs_epu16(sv, v->xthv);
+
+	/* all columns become zero when all the cells dropped X from the current max */
+	print_vector_raw(xtest);
+	debug("test(%u)", dz_is_all_zero(xtest));
+	return(dz_is_all_zero(xtest));
+}
+
+static __dz_vectorize
+uint64_t dz_maxv_update(dz_maxv_work_t *v, __m128i sv, __m128i bv)
+{
+	/*
+	 * update maximum-tracking vector; uses xdrop-adjusted vector again
+	 * for collecting columnwise max values on v->maxv.
+	 * appropriate full-length bonus fed to bv in positive.
+	 */
+
+	/* adjust offset; xtest is reused after is_drop */
+	__m128i xtest = _mm_subs_epu16(sv, v->xthv);
+
+	/* adjust full-length bonus if needed */
+	#ifdef DZ_FULL_LENGTH_BONUS
+		xtest = _mm_add_epi16(xtest, bv);
+	#else
+		dz_unused(bv);
+	#endif
+
+	/* update max */
+	v->maxv = _mm_max_epu16(v->maxv, xtest);
+	print_vector(v->maxv);
+
+	/* test X-drop */
+	return(dz_maxv_is_drop(v, sv));
+}
+
+static __dz_vectorize
+uint32_t dz_maxv_finalize(dz_maxv_work_t const *v)
+{
+	/*
+	 * folding max over the max-tracking vector; returns increase on score and inc
+	 */
+	__m128i t = v->maxv;
+	t = _mm_max_epu16(t, _mm_srli_si128(t, 8));
+	t = _mm_max_epu16(t, _mm_srli_si128(t, 4));
+	t = _mm_max_epu16(t, _mm_srli_si128(t, 2));
+	uint16_t const m = _mm_extract_epi16(t, 0);
+
+	return((uint32_t)m);		/* with offset */
+}
+
+
+
+
+/*
+ * fill-in vector handling
+ */
+typedef struct {
+	uint16_t _pad1[7];
+	uint16_t min;			/* init S value for internal vector */
+	uint16_t init;			/* init S value for the first vector */
+	uint16_t _pad2[7];
+
+	__m128i div, dev;
+	__m128i iiv, iev1, iev2, iev4, iev8;
+} dz_cvec_t;
+dz_static_assert((sizeof(dz_cvec_t) % 16) == 0);
+
+static __dz_vectorize
+dz_cvec_t dz_cvec_init_intl(dz_profile_t const *profile, uint16_t init)
+{
+	/* insertion penalties */
+	__m128i const iiv = _mm_load_si128((__m128i const *)profile->iiv);
+	__m128i const iev = _mm_load_si128((__m128i const *)profile->iev);
+	__m128i const div = _mm_load_si128((__m128i const *)profile->div);
+	__m128i const dev = _mm_load_si128((__m128i const *)profile->dev);
+
+	return((dz_cvec_t){
+		.iiv  = iiv,
+		.iev1 = iev,
+		.iev2 = _mm_add_epi16(iev, iev),
+		.iev4 = _mm_slli_epi16(iev, 2),
+		.iev8 = _mm_slli_epi16(iev, 3),
+
+		/* deletion penalties */
+		.div  = div,
+		.dev  = dev,
+
+		/* X-drop threshold */
+		.min  = dz_add_ofs(DZ_CELL_MIN),
+		.init = init
+	});
+}
+
+static __dz_vectorize
+dz_cvec_t dz_cvec_init(dz_profile_t const *profile)
+{
+	return(dz_cvec_init_intl(profile, profile->init));
+}
+
+
+
+
+/* fetcher */
+
+typedef struct {
+	int8_t const *matrix;
+	dz_query_t const *query;
+	dz_fetcher_t fetcher;	/* contains working buffer */
+} dz_fetch_work_t;
+
+static __dz_vectorize
+dz_fetch_work_t dz_fetch_init(dz_fetcher_t *fetcher, dz_profile_t const *profile, dz_query_t const *query)
+{
+	return((dz_fetch_work_t){
+		.matrix  = profile->matrix,
+		.query   = query,
+		.fetcher = *fetcher
+	});
+}
+
+static __dz_vectorize
+uint64_t dz_fetch_next(dz_fetch_work_t *f, dz_link_t *link)
+{
+	/* we expect this function call is inlined */
+	dz_fill_fetch_t next = f->fetcher.fetch_next(f->fetcher.opaque, f->matrix, f->query);
+	debug("fetched, rch(%c), is_term(%u)", next.rch, next.is_term);
+	if(next.is_term) { return(1); }
+
+	/* FIXME: update adj?? */
+	link->rch = next.rch;
+	link->idx++;
+	return(0);
+}
+
+static __dz_vectorize
+__m128i dz_fetch_get_profile(dz_fetch_work_t const *f, uint32_t p)
+{
+	return(f->fetcher.get_profile(f->fetcher.opaque,
+		f->matrix,
+		f->query,
+		p * DZ_L
+	));
+}
+
+static __dz_vectorize
+__m128i dz_fetch_get_bonus(dz_fetch_work_t const *f, uint64_t is_tail)
+{
+	return(dz_query_get_bonus(f->query, is_tail));
+}
+
+
+
+
+typedef struct {
+	__m128i e, f, s, ps;	/* prev s */
+} dz_update_work_t;
+
+static __dz_vectorize
+void dz_update_reset_v(dz_update_work_t *u)
+{
+	/* min == zero */
+	__m128i const minv = _mm_set1_epi16(dz_add_ofs(DZ_CELL_MIN));
+
+	/* clear upward dependency */
+	u->f = minv;
+	return;
+}
+
+static __dz_vectorize
+void dz_update_reset_h(dz_update_work_t *u)
+{
+	/* min == zero */
+	__m128i const minv = _mm_set1_epi16(dz_add_ofs(DZ_CELL_MIN));
+
+	/* clear leftward dependency */
+	u->e = minv;
+	u->s = minv;
+	return;
+}
+
+static __dz_vectorize
+void dz_update_reset_ps(dz_update_work_t *u, dz_cvec_t const *v, uint64_t is_head)
+{
+	/* ofs(0) if scan, min otherwise; FIXME: is cmovq -> pinsertw faster? */
+	__m128i const psv = _mm_loadu_si128((__m128i const *)&(&v->min)[(size_t)is_head - 7]);
+
+	/* save */
+	u->ps = psv;
+	return;
+}
+
+static __dz_vectorize
+void dz_update_init(dz_update_work_t *u, dz_cvec_t const *v, uint64_t is_head)
+{
+	/* S, E vectors; FIXME: offset */
+	dz_update_reset_h(u);
+
+	/* load appropriate prev S value */
+	dz_update_reset_ps(u, v, is_head);		/* prev S differs depending on coordinate */
+	return;
+}
+
+#if 0
+static __dz_vectorize
+void dz_update_shrink(dz_update_work_t *u)
+{
+	u->col--;
+	return;
+}
+
+static __dz_vectorize
+void dz_update_load(dz_update_work_t *u, size_t p)
+{
+	u->e = _mm_load_si128((__m128i const *)&u->prev_col[p].e);
+	u->s = _mm_load_si128((__m128i const *)&u->prev_col[p].s);
+
+	debug("load, prev_col(%p), p(%zu)", prev_col, p);
+	// print_vector(u->e); print_vector(u->s);
+	return;
+}
+
+static __dz_vectorize
+__m128i dz_update_store(dz_update_work_t *u, size_t p)
+{
+	_mm_store_si128((__m128i *)&u->col[p].e, u->e);
+	_mm_store_si128((__m128i *)&u->col[p].f, u->f);
+	_mm_store_si128((__m128i *)&u->col[p].s, u->s);
+
+	// debug("col(%p), p(%zu)", u->col, p);
+	// print_vector(u->e);
+	// print_vector(u->f);
+	// print_vector(u->s);
+	return(u->s);
+}
+#else
+
+static __dz_vectorize
+void dz_update_load(dz_update_work_t *u, dz_swgv_t const *prev_col)
+{
+	u->e = _mm_load_si128((__m128i const *)&prev_col->e);
+	u->s = _mm_load_si128((__m128i const *)&prev_col->s);
+
+	debug("load, prev_col(%p)", prev_col);
+	// print_vector(u->e); print_vector(u->s);
+	return;
+}
+
+
+static __dz_vectorize
+__m128i dz_update_store(dz_update_work_t *u, dz_swgv_t *col)
+{
+	_mm_store_si128((__m128i *)&col->e, u->e);
+	_mm_store_si128((__m128i *)&col->f, u->f);
+	_mm_store_si128((__m128i *)&col->s, u->s);
+
+	print_vector(u->s); print_vector(u->e); print_vector(u->f);
+	return(u->s);
+}
+
+#endif
+static __dz_vectorize
+__m128i dz_update_body(dz_update_work_t *u, dz_cvec_t const *v, __m128i sc)
+{
+	/* E[i, j] = max{ E[i - 1, j], S[i - 1, j] - Gi } - Ge */
+	__m128i const tte = _mm_max_epu16(u->e, _mm_subs_epu16(u->s, v->div));
+	__m128i const te  = _mm_subs_epu16(tte, v->dev);
+	/* print_vector(_mm_alignr_epi8(s, ps, 14)); print_vector(sc); */
+
+	/* U[i, j] = max{ E[i, j], S[i - 1, j - 1] + sc(i, j) } */
+	__m128i const ofsv = _mm_set1_epi16(DZ_SCORE_OFS);
+	__m128i const tts  = _mm_adds_epu16(sc, _mm_alignr_epi8(u->s, u->ps, 14));
+	__m128i const ts   = _mm_max_epu16(te, _mm_subs_epu16(tts, ofsv));		/* to avoid overflow; FIXME: can be removed? */
+	u->ps = u->s;
+
+	/* fold F[i, j] = max{ U[i, j] - Gi, F[i, j - 1] - Ge } */
+	__m128i tf = _mm_max_epu16(
+		_mm_subs_epu16(ts, v->iiv),
+		_mm_subs_epu16(_mm_srli_si128(u->f, 14), v->iev1)
+	);
+	tf = _mm_max_epu16(tf, _mm_subs_epu16(_mm_slli_si128(tf, 2), v->iev1));
+	tf = _mm_max_epu16(tf, _mm_subs_epu16(_mm_slli_si128(tf, 4), v->iev2));
+	tf = _mm_max_epu16(tf, _mm_subs_epu16(_mm_slli_si128(tf, 8), v->iev4));
+
+	/* S[i, j] = max{ U[i, j], F[i, j] } */
+	__m128i const us = _mm_max_epu16(ts, tf);
+
+	/* done */
+	u->f = tf;
+	u->e = te;
+	u->s = us;
+
+	print_vector(us); /* print_vector(bv); */
+	return(u->s);
+}
+
+static __dz_vectorize
+__m128i dz_update_tail(dz_update_work_t *u, dz_cvec_t const *v)
+{
+	/* nothing to do in offset DP */
+	u->f = _mm_subs_epu16(u->f, v->iev8);
+	u->s = _mm_subs_epu16(u->s, v->iev8);
+
+	print_vector(u->s);
+	return(u->s);
+}
+
+
+
+
+/*
+ * working buffers
+ */
+typedef struct {
+	/* constants */
+	dz_fetch_work_t fetch;
+	dz_cvec_t cvec;
+
+	/* work */
+	dz_maxv_work_t maxv;
+	dz_update_work_t uvec;
+} dz_work_t;
+
+
+
+
+/*
+ * col (array of swgv) handling
+ */
+static __dz_vectorize
+uint16_t *dz_col_finalize(dz_swgv_t *col, dz_range_t const *range, dz_link_t const *link)
+{
+	dz_cap_t *cap = dz_cap_column(col, range->eblk);
+
+	/*
+	 * cap->range = *range;
+	 * cap->link  = *link;
+	 */
+	uint64_t const x = dz_loadu_u64(range);
+	uint64_t const y = dz_loadu_u64(link);
+
+	dz_storeu_u64(&cap->range, x);
+	dz_storeu_u64(&cap->link,  y);
+
+	/* returns pointer to adj */
+	return(&cap->link.adj);
+}
+
+static __dz_vectorize
+dz_swgv_t *dz_col_allocate(dz_arena_t *mem, dz_swgv_t *prev_col, dz_range_t const *range)
+{
+	/* update stack pointer */
+	dz_cap_t *cap = dz_cap_column(prev_col, range->eblk);
+	dz_save_stack(mem, cap + 1);
 
 	/* add stack if memory starved */
-	size_t size = 2 * sizeof(dz_state_t *);
-	size += dz_calc_column_size(w->state.range.sblk, w->state.range.eblk);
+	size_t const size = 2 * sizeof(dz_state_t *) + dz_calc_column_size(range);
 
 	/* allocate memory from stack */
 	uint8_t *ptr = dz_reserve_stack(mem, size);
 	debug("cap(%p, %p)", cap, dz_cap(ptr) - 1);
 	if(dz_likely(dz_cap(ptr) == cap + 1)) { return(dz_swgv(cap + 1)); }
 
-	/* new stack allocated */
-	return(dz_slice_ilink(cap, ptr));
+	/* new stack allocated (columns disjoint); create internal link */
+	return(dz_slice_ilink(ptr, cap));
 }
 
 static __dz_vectorize
-dz_swgv_t *dz_slice_cap(dz_work_t *w, dz_swgv_t *prev_col, dz_arena_t *mem)
+dz_swgv_t *dz_col_anchor(dz_swgv_t *col, size_t sblk)
 {
-	dz_swgv_t *col = dz_slice_cap_core(w, prev_col, mem);
-	return(col - w->state.range.sblk);
+	return(col - sblk);
 }
 
 
 
-
-/* scan */
-static __dz_vectorize
-uint64_t dz_is_scan(dz_profile_t const *profile)
-{
-	return(profile->init == (uint16_t)dz_add_ofs(0));
-}
 
 /* merge incoming vectors */
 static __dz_vectorize
-void dz_merge_init_col(dz_work_t *w, dz_swgv_t *col)
+void dz_col_fold_init(dz_swgv_t *col, dz_range_t const *range)
 {
-	__m128i const minv = _mm_set1_epi16(dz_add_ofs(INT16_MIN));
+	__m128i const minv = _mm_set1_epi16(dz_add_ofs(DZ_CELL_MIN));
 	dz_swgv_t const v = { minv, minv, minv };
 
-	for(uint32_t p = w->state.range.sblk; p < w->state.range.eblk; p++) {
+	for(size_t p = range->sblk; p < range->eblk; p++) {
 		dz_store_swgv(&col[p], v);
 	}
 	return;
 }
 
 static __dz_vectorize
-uint16_t dz_merge_calc_adj(dz_work_t *w, dz_state_t const *ff)
+__m128i dz_col_compose_adjv(dz_max_t const *max, dz_state_t const *incoming)
 {
 	/* base score at the head of this segment */
-	int32_t const base = ff->max.score - dz_rm_ofs(ff->max.inc);
+	int32_t const base = dz_score_base(&incoming->max.score);
 
 	/* calc decrease amount from the current max */
-	int32_t const dec  = w->state.max.score - base;		/* we are sure the value is always >= 0 */
-	return(dec < UINT16_MAX ? dec : UINT16_MAX);		/* clip if overflowed */
+	int32_t const gap  = dz_score_abs(&max->score) - base;
+	debug("gap(%d)", gap);
+
+	/* we are sure the value is always >= 0 for ordinary extension; always <= 0 for scan */
+	__m128i const gapv = _mm_set1_epi32(gap);
+
+	/* shrink bitwidth; clip if overflowed */
+	__m128i const adjv = _mm_packus_epi32(gapv, gapv);
+	return(adjv);
 }
 
 static __dz_vectorize
-void dz_merge_fold_col(dz_work_t *w, dz_swgv_t *col, dz_profile_t const *profile)
+void dz_col_fold_swgv(dz_swgv_t *col, dz_max_t const *max, dz_state_t const **ff, size_t fcnt)
 {
-	/* squash max if scan */
-	if(dz_is_scan(profile)) { w->state.max.score = 0; }
-
 	/* for each incoming vectors */
-	for(size_t i = 0; i < w->incoming.cnt; i++) {
-		dz_state_t const *ff = w->incoming.ptr[i];
+	for(size_t i = 0; i < fcnt; i++) {
+		dz_state_t const *s = ff[i];
+		__m128i const adjv = dz_col_compose_adjv(max, s);
+		debug("adj(%d)", _mm_extract_epi16(adjv, 0));
 
-		uint16_t const adj = dz_is_scan(profile) ? 0 : dz_merge_calc_adj(w, ff);
-		__m128i const adjv = _mm_set1_epi16(adj);
-		debug("adj(%d)", adj);
-
-		dz_swgv_t const *prev_col = dz_restore_tail_column(ff);
-		for(uint64_t p = ff->range.sblk; p < ff->range.eblk; p++) {
+		dz_swgv_t const *prev_col = dz_restore_tail_column(s);
+		for(size_t p = s->range.sblk; p < s->range.eblk; p++) {
 			dz_swgv_t const v = dz_load_swgv(&prev_col[p]);
 			dz_swgv_t const x = dz_load_swgv(&col[p]);
 
@@ -2360,298 +2775,35 @@ void dz_merge_fold_col(dz_work_t *w, dz_swgv_t *col, dz_profile_t const *profile
 }
 
 static __dz_vectorize
-dz_swgv_t *dz_merge_column(dz_work_t *w, dz_cap_t *prev_cap, dz_profile_t const *profile)
+dz_swgv_t *dz_col_merge(dz_arena_t *mem, dz_range_t const *range, dz_max_t const *max, dz_state_t const **ff, size_t fcnt)
 {
-	/* prev_cap is head cap */
-	dz_swgv_t *col = dz_slice_column(prev_cap, w->state.range.sblk);
+	/* range obtained in dz_load_state */
+	dz_head_t *head = dz_slice_head(mem, range, ff, fcnt);
 
-	dz_merge_init_col(w, col);
-	dz_merge_fold_col(w, col, profile);
+	/* save incoming vector array */
+	dz_save_incoming(head, ff, fcnt);
+
+	/* save head-cap info; convert to column pointer */
+	dz_cap_t *cap  = dz_init_head(head, max, ff, fcnt);
+	dz_swgv_t *col = dz_slice_column(cap, range->sblk);
+
+	/* clear the column then merge */
+	dz_col_fold_init(col, range);
+	dz_col_fold_swgv(col, max, ff, fcnt);
 	return(col);
 }
 
-
-/* fill in */
-typedef struct {
-	__m128i f, e, s;
-	__m128i ps;			/* prev s */
-
-	/* max tracker */
-	__m128i maxv, xtv;
-
-	dz_swgv_t *prev_col, *col;
-} dz_fill_work_t;
-
 static __dz_vectorize
-void dz_fill_work_init(dz_work_t *w, dz_fill_work_t *fw)
+void dz_col_rebase(dz_swgv_t *col, dz_range_t const *range, uint32_t adj)
 {
-	/* S at i == 0 */
-	__m128i const isv = _mm_load_si128((__m128i const *)&(&w->init)[-7]);
+	debugblock({
+		assert(adj < UINT16_MAX, "adj(%u)", adj);
+	});
 
-	/* FIXME: offsetted */
-	fw->f    = w->minv;		/* F will be initialized again just before the fill-in loop */
-	fw->e    = w->minv;
-	fw->s    = w->minv;
-	fw->ps   = w->state.range.sblk == 0 ? isv : w->minv;	/* ofs(0) if scan, min otherwise */
-	fw->maxv = w->minv;
-	fw->xtv  = _mm_set1_epi16(w->state.max.inc - w->xt);	/* offset already included; next offset == current max thus X-drop threshold is always -xt */
-	return;
-}
-
-
-static __dz_vectorize
-void dz_fill_load_vector(dz_fill_work_t *fw, size_t p)
-{
-	fw->e = _mm_load_si128((__m128i const *)&fw->prev_col[p].e);
-	fw->s = _mm_load_si128((__m128i const *)&fw->prev_col[p].s);
-
-	debug("col(%p, %p), p(%zu)", fw->prev_col, fw->col, p);
-	// print_vector(fw->e); print_vector(fw->s);
-	return;
-}
-
-static __dz_vectorize
-void dz_fill_update_vector(dz_work_t *w, dz_fill_work_t *fw, __m128i sc)
-{
-	print_vector(_mm_alignr_epi8(fw->s, fw->ps, 14));
-	print_vector(sc);
-
-	/* E[i, j] = max{ E[i - 1, j], S[i - 1, j] - Gi } - Ge */
-	__m128i const tte = _mm_max_epu16(fw->e, _mm_subs_epu16(fw->s, w->div));
-	__m128i const te  = _mm_subs_epu16(tte, w->dev);
-
-	/* U[i, j] = max{ E[i, j], S[i - 1, j - 1] + sc(i, j) } */
-	__m128i const tts = _mm_adds_epu16(sc, _mm_alignr_epi8(fw->s, fw->ps, 14));
-	__m128i const ts  = _mm_max_epu16(te, _mm_subs_epu16(tts, w->ofsv));
-	fw->ps = fw->s;
-
-	/* fold F[i, j] = max{ U[i, j] - Gi, F[i, j - 1] - Ge } */
-	#if 0
-	__m128i const uf = _mm_subs_epu16(_mm_alignr_epi8(ts, fw->s, 14), w->iiv);
-	__m128i tf = _mm_subs_epu16(_mm_max_epu16(uf, _mm_srli_si128(fw->f, 14)), w->iev1);
-	tf = _mm_max_epu16(tf, _mm_subs_epu16(_mm_slli_si128(tf, 2), w->iev1));
-	tf = _mm_max_epu16(tf, _mm_subs_epu16(_mm_slli_si128(tf, 4), w->iev2));
-	tf = _mm_max_epu16(tf, _mm_subs_epu16(_mm_slli_si128(tf, 8), w->iev4));
-	#else
-	__m128i tf = _mm_max_epu16(
-		_mm_subs_epu16(ts, w->iiv),
-		_mm_subs_epu16(_mm_srli_si128(fw->f, 14), w->iev1)
-	);
-	tf = _mm_max_epu16(tf, _mm_subs_epu16(_mm_slli_si128(tf, 2), w->iev1));
-	tf = _mm_max_epu16(tf, _mm_subs_epu16(_mm_slli_si128(tf, 4), w->iev2));
-	tf = _mm_max_epu16(tf, _mm_subs_epu16(_mm_slli_si128(tf, 8), w->iev4));
-	#endif
-
-	/* S[i, j] = max{ U[i, j], F[i, j] } */
-	__m128i const us = _mm_max_epu16(ts, tf);
-
-	/* done */
-	fw->f = tf;
-	fw->e = te;
-	fw->s = us;
-
-	print_vector(us); /* print_vector(bv); */
-	return;
-}
-
-static __dz_vectorize
-void dz_fill_update_maxv(dz_fill_work_t *fw, __m128i bv)
-{
-	/* update max */
-	#ifdef DZ_FULL_LENGTH_BONUS
-		fw->maxv = _mm_max_epu16(fw->maxv, _mm_add_epi16(fw->s, bv));
-	#else
-		dz_unused(bv);
-		fw->maxv = _mm_max_epu16(fw->maxv, fw->s);
-	#endif
-	print_vector(fw->maxv);
-	return;
-}
-
-static __dz_vectorize
-void dz_fill_store_vector(dz_fill_work_t *fw, size_t p)
-{
-	_mm_store_si128((__m128i *)&fw->col[p].e, fw->e);
-	_mm_store_si128((__m128i *)&fw->col[p].f, fw->f);
-	_mm_store_si128((__m128i *)&fw->col[p].s, fw->s);
-
-	// debug("col(%p), p(%zu)", fw->col, p);
-	// print_vector(fw->e);
-	// print_vector(fw->f);
-	// print_vector(fw->s);
-	return;
-}
-
-
-static __dz_vectorize
-uint16_t dz_fill_fold_max(__m128i v)
-{
-	__m128i t = _mm_max_epu16(v, _mm_srli_si128(v, 8));
-	t = _mm_max_epu16(t, _mm_srli_si128(t, 4));
-	t = _mm_max_epu16(t, _mm_srli_si128(t, 2));
-	return(_mm_extract_epi16(t, 0));		/* with offset */
-}
-
-static __dz_vectorize
-uint64_t dz_fill_test_xdrop(dz_fill_work_t *fw)
-{
-	__m128i xtest = _mm_subs_epu16(fw->s, fw->xtv);
-
-	/* print_vector(_s); print_vector(_xtv); */
-	return(dz_is_all_zero(xtest));
-}
-
-static __dz_vectorize
-uint64_t dz_fill_is_bottom(dz_work_t *w, dz_query_t const *query)
-{
-	return(w->state.range.eblk >= (uint32_t)query->blen);
-}
-
-static __dz_vectorize
-uint64_t dz_fill_column_body(dz_work_t *w, dz_fill_work_t *fw, dz_fetcher_t *fetcher, dz_profile_t const *profile, dz_query_t const *query)
-{
-	/*
-	 * return 0 if continue to tail-fill loop
-	 */
-
-	/* put margin at the head for simplicity of the outer loop */
-	w->state.range.sblk--;
-	fw->col++;
-
-	uint32_t p = w->state.range.sblk;		/* make sure it's decremented by one (see above) */
-	do {
-		/* remove head vector by one; complemented with the margin put above */
-		w->state.range.sblk++;
-		fw->col--;
-
-		/* reset f vector when succeeding vector is missing */
-		fw->f = w->minv;
-
-		/* load-update-save loop; fallthrough to return(is_bottom) */
-		while(++p < w->state.range.eblk) {
-			/* load previous DP matrix vectors */
-			dz_fill_load_vector(fw, p);
-
-			/* load score profile and update vectors */
-			__m128i const sc = fetcher->get_profile(fetcher->opaque, profile->matrix, query, p * DZ_L);
-			dz_fill_update_vector(w, fw, sc);
-
-			/* save if at least one cell survived; we don't need update max vector when all the cells in the vector met xdrop */
-			if(dz_unlikely(dz_fill_test_xdrop(fw))) {
-				goto _xdrop;			/* skip the return right after this loop */
-			}
-
-			/* save vectors */
-			__m128i const bv = dz_query_get_bonus(query, p);	/* we expect this load is issued before the branch above */
-			dz_fill_update_maxv(fw, bv);		/* (somewhat lazy) max update; see above */
-			dz_fill_store_vector(fw, p);
-
-		}
-		return(dz_fill_is_bottom(w, query));	/* extend further if query remains */
-
-		/* break */
-	_xdrop:;
-	} while(p == w->state.range.sblk);	/* continue the loop when the xdrop is invoked at the top */
-
-	/* write back tail when xdrop */
-	w->state.range.eblk = p;
-
-	debug("range(%u, %u), blen(%zu)", w->state.range.sblk, w->state.range.eblk, query->blen);
-	return(1);							/* do not continue fill-in when xdrop */
-}
-
-static __dz_vectorize
-void dz_fill_column_tail(dz_work_t *w, dz_fill_work_t *fw, dz_fetcher_t *fetcher, dz_profile_t const *profile, dz_query_t const *query)
-{
-	/* forefront extension; clip the column length if too long */
-	fw->e = w->minv;					/* E is kept min in this loop */
-	fw->s = w->minv;					/* S follows F */
-
-	/* update the last vector */
-	__m128i const sc = fetcher->get_profile(fetcher->opaque, profile->matrix, query, w->state.range.eblk * DZ_L);
-	dz_fill_update_vector(w, fw, sc);
-
-	#if 0
-	/* do we still have a chance that the first cell of the vector becomes the maximum? */
-	__m128i const bv = dz_query_get_bonus(query, w->state.range.eblk);
-	dz_fill_update_maxv(fw, bv);
-	#endif
-
-	/* until all the cells drop */
-	do {
-		if(dz_fill_test_xdrop(fw)) { break; }
-		dz_fill_store_vector(fw, w->state.range.eblk);
-
-		fw->f = _mm_subs_epu16(fw->f, w->iev8);
-		fw->s = _mm_subs_epu16(fw->s, w->iev8);
-	} while(++w->state.range.eblk < (uint32_t)query->blen);
-	return;
-}
-
-static __dz_vectorize
-void dz_fill_update_max(dz_work_t *w, dz_fill_work_t *fw)
-{
-	/* update max; the actual score (absolute score accumulated from the origin) is expressed as max + inc; 2 x cmov */
-	uint32_t const inc = dz_fill_fold_max(fw->maxv);/* offset NOT removed */
-
-	/* with offset */
-	if(dz_cmp_max(inc, w->state.max.inc)) {
-		w->state.max.inc = inc;
-		w->state.max.cap = dz_cap_column(fw->col, w->state.range.eblk);
-	}
-	debug("inc(%d), base(%d), score(%d), cap(%p, %p)", dz_rm_ofs(inc), w->state.max.score, w->state.max.score + dz_rm_ofs(inc), dz_cap_column(fw->col, w->state.range.eblk), w->state.max.cap);
-	return;
-}
-
-static __dz_vectorize
-dz_swgv_t *dz_fill_column(dz_work_t *w, dz_swgv_t *prev_col, dz_arena_t *mem, dz_fetcher_t *fetcher, dz_profile_t const *profile, dz_query_t const *query)
-{
-	dz_fill_work_t fw;
-
-	/* slice new cap */
-	fw.prev_col = prev_col;
-	fw.col = dz_slice_cap(w, prev_col, mem);
-
-	/* init vectors */
-	dz_fill_work_init(w, &fw);
-
-	/* if reached the forefront of the query sequence, finish the extension */
-	if(!dz_fill_column_body(w, &fw, fetcher, profile, query)) {
-		dz_fill_column_tail(w, &fw, fetcher, profile, query);
-	}
-
-	/* create cap object that contains [sblk, eblk) range (for use in the traceback routine) */
-	dz_fill_update_max(w, &fw);
-	return(fw.col);
-}
-
-static __dz_vectorize
-uint64_t dz_is_end(dz_work_t *w)
-{
-	return((w->state.range.eblk - w->state.range.sblk) == 0);
-}
-
-static __dz_vectorize
-uint64_t dz_test_overflow(dz_work_t *w)
-{
-	return(w->state.max.inc > (UINT16_MAX - DZ_OVERFLOW_MARGIN));	/* with offset */
-}
-
-static __dz_vectorize
-void dz_reset_base(dz_work_t *w, dz_swgv_t *col)
-{
-	uint16_t const adj = dz_rm_ofs(w->state.max.inc);	/* removing offset */
 	__m128i const adjv = _mm_set1_epi16(adj);
 
-	/* restore cap pointer; cap before col holds range for previous col */
-	dz_cap_t *cap = dz_cap(col + w->state.range.sblk) - 1;
-	cap->tracker.adj    = adj;		/* overwrite adj */
-	w->state.max.score += adj;
-	w->state.max.inc    = dz_add_ofs(0);
-	debug("reset base, adj(%u), cap(%p)", adj, cap);
-
 	/* subtract adjustment */
-	for(uint32_t p = w->state.range.sblk; p < w->state.range.eblk; p++) {
+	for(size_t p = range->sblk; p < range->eblk; p++) {
 		/* load-compensate-store */
 		dz_swgv_t const v  = dz_load_swgv(&col[p]);
 		dz_swgv_t const cv = dz_subs_swgv(v, adjv);
@@ -2661,16 +2813,237 @@ void dz_reset_base(dz_work_t *w, dz_swgv_t *col)
 }
 
 
-static __dz_vectorize
-uint64_t dz_fetch_next(dz_work_t *w, dz_fetcher_t *fetcher, dz_profile_t const *profile, dz_query_t const *query)
-{
-	dz_fill_fetch_t next = fetcher->fetch_next(fetcher->opaque, profile->matrix, query);
-	if(next.is_term) { return(1); }
 
-	/* FIXME: update adj?? */
-	w->tracker.ch = next.ch;
-	w->tracker.idx++;
+
+/*
+ * fill-in core functions
+ */
+static __dz_vectorize
+uint64_t dz_col_fill_core(dz_work_t *w, dz_swgv_t const *prev_col, size_t p)
+{
+	/* load-fill-xdrop all-in-one */
+	dz_update_load(&w->uvec, &prev_col[p]);
+	__m128i const sv = dz_update_body(&w->uvec, &w->cvec,
+		dz_fetch_get_profile(&w->fetch, p)
+	);
+	return(dz_maxv_is_drop(&w->maxv, sv));
+}
+
+typedef struct {
+	uint64_t cont;
+	uint32_t fwd;		/* forwarded length of range.sblk */
+} dz_col_fill_head_t;
+
+static __dz_vectorize
+dz_col_fill_head_t dz_col_fill_head(dz_work_t *w, dz_swgv_t const *prev_col, dz_range_t *range)
+{
+	uint32_t const sblk = range->sblk;
+
+	switch(0) do {
+		/* the first vector dropped; remove the vector and forward pointer */
+		dz_range_shrink(range);		/* forward sblk */
+
+		/* accumulate max tracker offset */
+		dz_maxv_forward(&w->maxv);
+
+	default:
+		/* first test if we can continue to DP fill-in; terminate when out-of-range */
+		if(dz_range_is_term(range)) {
+			return((dz_col_fill_head_t){
+				.cont = 1,
+				.fwd  = range->sblk - sblk
+			});
+		}
+
+		/* reset F vector before filling-in DP cells */
+		dz_update_reset_v(&w->uvec);
+
+		/* DP calculation; continue the loop when xdrop */
+	} while(dz_col_fill_core(w, prev_col, range->sblk));
+
+	/* continue */
+	return((dz_col_fill_head_t){
+		.cont = 0,
+		.fwd  = range->sblk - sblk
+	});
+}
+
+static __dz_vectorize
+uint64_t dz_col_fill_body(dz_work_t *w, dz_swgv_t const *prev_col, dz_swgv_t *col, dz_range_t *range, uint32_t blen)
+{
+	/* initialize counter */
+	uint32_t p = range->sblk;
+
+	/* load-update-save loop; fallthrough from the fill_head */
+	do {
+		/* save (continued from fill_head) */
+		__m128i const sv = dz_update_store(&w->uvec, &col[p]);
+
+		/* update max tracker; we need bonus vector */
+		__m128i const bv = dz_fetch_get_bonus(&w->fetch, p + 1 == blen);
+		dz_maxv_update(&w->maxv, sv, bv);	/* (somewhat lazy) max update; see above */
+
+		/* accumulate max tracker offset before testing range */
+		dz_maxv_forward(&w->maxv);
+
+		/* continue to fill_tail loop */
+		if(++p >= range->eblk) { return(0); }
+
+		/* DP calculation; continue the loop when not xdrop */
+	} while(!dz_col_fill_core(w, prev_col, p));
+
+
+	/* write back tail when xdrop */
+	range->eblk = p;
+
+	/* do not continue fill-in when xdrop */
+	return(1);
+}
+
+static __dz_vectorize
+void dz_col_fill_tail(dz_work_t *w, dz_swgv_t *col, dz_range_t *range, uint32_t blen)
+{
+	/* continued from fill_body; first test if we can fill further */
+	if(dz_range_is_bottom(range, blen)) { return; }
+
+	/* forefront extension; clip the column length if too long */
+	dz_update_reset_h(&w->uvec);
+
+	/* update the last vector */
+	__m128i cv = dz_update_body(&w->uvec, &w->cvec,
+		dz_fetch_get_profile(&w->fetch, range->eblk)
+	);
+
+	#if 0
+	/* do we still have a chance that the first cell of the vector becomes the maximum? */
+	__m128i const bv = dz_fetch_get_bonus(&w->fetch, range->eblk + 1 == blen);
+	dz_maxv_update(&w->maxv, sv, bv);	/* (somewhat lazy) max update; see above */
+	#endif
+
+	/* until all the cells drop; here E vector is still clipped to min */
+	while(!dz_maxv_is_drop(&w->maxv, cv)) {
+		/* save and update max tracker */
+		dz_update_store(&w->uvec, &col[range->eblk]);
+		dz_maxv_forward(&w->maxv);
+
+		/* forward eblk */
+		if(dz_range_extend(range, blen)) { break; }
+
+		/* update vertical chain */
+		cv = dz_update_tail(&w->uvec, &w->cvec);
+	}
+	return;
+}
+
+static __dz_vectorize
+void dz_col_fill_init(dz_work_t *w, dz_range_t const *range, dz_max_t const *max, uint32_t xth)
+{
+	/* init maximum tracker */
+	dz_maxv_init(&w->maxv, max, xth);
+
+	/* init vectors */
+	dz_update_init(&w->uvec, &w->cvec, dz_range_is_head(range));
+	return;
+}
+
+static __dz_vectorize
+uint32_t dz_col_fill_finalize(dz_work_t *w, dz_swgv_t *col, dz_range_t const *range, dz_max_t *max, uint32_t xth)
+{
+	/* create cap object that contains [sblk, eblk) range (for use in the traceback routine) */
+	uint32_t const inc = dz_maxv_finalize(&w->maxv);	/* with offset */
+	dz_cap_t const *cap = dz_cap_column(col, range->eblk);
+
+	/* place internal merging vector if score exceeded floor */
+	if(dz_max_update(max, cap, xth, inc)) {
+		debug("rebase needed");
+
+		/* rebase DP vectors */
+		uint32_t const adj = dz_max_rebase(max);
+		dz_col_rebase(col, range, adj);
+
+		/* save adj (non-zero) when rebase took place */
+		return(adj);
+	}
+
+	/* otherwise zero */
 	return(0);
+}
+
+
+typedef struct {
+	dz_swgv_t *col;
+	uint32_t adj;
+} dz_col_fill_t;
+
+static __dz_vectorize
+dz_col_fill_t dz_col_fill(dz_work_t *w, dz_swgv_t const *prev_col, dz_swgv_t *next_col, dz_ctx_t *ctx)
+{
+	/* init DP and maximum-tracking vectors */
+	dz_col_fill_init(w, &ctx->range, &ctx->max, ctx->xth);
+
+	/* if reached the forefront of the query sequence, finish the extension */
+	dz_col_fill_head_t const h = dz_col_fill_head(w, prev_col, &ctx->range);		/* poll head vectors and determine first survived one */
+	debug("cont(%lu)", h.cont);
+
+	/* update score offset for skipped blocks */
+	dz_max_forward(&ctx->max, h.fwd);
+
+	/* then start fill-in */
+	dz_swgv_t *col = dz_col_anchor(next_col, ctx->range.sblk);
+	if(!h.cont && !dz_col_fill_body(w, prev_col, col, &ctx->range, ctx->blen)) {
+		dz_col_fill_tail(w, col, &ctx->range, ctx->blen);
+	}
+
+	/* calc and save adj in link */
+	uint32_t const adj = dz_col_fill_finalize(w, col, &ctx->range, &ctx->max, ctx->xth);
+	return((dz_col_fill_t){
+		.col = col,
+		.adj = adj
+	});
+}
+
+
+
+
+static __dz_vectorize
+dz_state_t *dz_extend_core_loop(
+	dz_arena_t *mem,
+	dz_ctx_t *ctx,
+	dz_swgv_t *prev_col,
+	dz_profile_t const *profile,
+	dz_query_t const *query,
+	dz_fetcher_t *fetcher)
+{
+	/* working variables */
+	dz_work_t w __attribute__(( aligned(16) )) = {
+		.fetch = dz_fetch_init(fetcher, profile, query),
+		.cvec  = dz_cvec_init(profile)
+	};
+
+	/* until X-drop; try next base, break if it's the end */
+	while(!dz_range_is_term(&ctx->range) && !dz_fetch_next(&w.fetch, &ctx->link)) {
+		debug("start, col(%p)", prev_col);
+
+		/*
+		 * create cap column for the previous column;
+		 * get pointer to adj bin so that we can save adj afterward.
+		 */
+		uint16_t *adj_bin = dz_col_finalize(prev_col, &ctx->range, &ctx->link);
+
+		/* slice new cap */
+		dz_swgv_t *next_col = dz_col_allocate(mem, prev_col, &ctx->range);
+
+		/* forward one */
+		dz_col_fill_t const f = dz_col_fill(&w, prev_col, next_col, ctx);
+
+		/* save adj and alias pointer for the next loop */
+		*adj_bin = f.adj;
+		prev_col = f.col;
+		debug("end, col(%p), adj(%d)", f.col, f.adj);
+	}
+
+	/* place tail cap */
+	return(dz_slice_tail(mem, prev_col, ctx->range.eblk));
 }
 
 static __dz_vectorize
@@ -2682,43 +3055,22 @@ dz_state_t const *dz_extend_core(
 	dz_state_t const **ff,
 	size_t fcnt)
 {
-	if(fcnt == 0) { return(NULL); }		/* invalid */
+	if(fcnt == 0) { return(NULL); }		/* invalid input */
 
-	/* init working buffer */
-	dz_work_t w __attribute__(( aligned(16) ));
-	dz_load_state(&w, ff, fcnt);		/* iterate over the incoming edge objects to get the current max and range */
-	dz_fixup_state(&w.state, query);
-	// debug("(%u, %u)", w.tracker.ch, w.tracker.idx);
+	/* merge metadata (range and max score) then vectors */
+	dz_ctx_t ctx __attribute__(( aligned(16) ));
+	dz_ctx_init(&ctx, dz_state_merge(query, ff, fcnt, dz_profile_is_scan(profile)), profile);
 
-	/* load constants */
-	dz_load_score_vector(&w, profile);
-
-	/* save head info */
-	dz_cap_t *cap = dz_slice_head(&w, mem);	/* range obtained in dz_load_state */
-	dz_save_incoming(cap, ff, fcnt);
-
-	/* merge incoming vectors */
-	dz_swgv_t *col = dz_merge_column(&w, cap, profile);
-	debug("merged, cap(%p), col(%p)", cap, col);
-
-	/* until X-drop */
-	while(!dz_is_end(&w)) {
-		if(dz_fetch_next(&w, fetcher, profile, query)) { break; }
-
-		/* forward one */
-		col = dz_fill_column(&w, col, mem, fetcher, profile, query);
-
-		/* place internal merging vector if score exceeded floor */
-		if(dz_unlikely(dz_test_overflow(&w))) {
-			dz_reset_base(&w, col);
-		}
-	}
-
-	/* update max and range */
-	dz_finalize_state(&w.state, &w.tracker);
+	/* extend */
+	dz_state_t *tail = dz_extend_core_loop(mem, &ctx,
+		dz_col_merge(mem, &ctx.range, &ctx.max, ff, fcnt),		/* merge DP columns */
+		profile, query, fetcher
+	);
+	debug("done, cap(%p)", tail);
 
 	/* save them in tail object */
-	return(dz_slice_tail(&w, col, mem, query));
+	dz_ctx_finalize(&ctx, tail);
+	return(tail);
 }
 
 
@@ -2788,122 +3140,112 @@ void dz_init_gap_penalties(dz_profile_t *profile, dz_score_conf_t const *conf)
 	/* X-drop threshold */
 	uint16_t const gi = dz_max2(conf->ins_open,   conf->del_open);
 	uint16_t const ge = dz_max2(conf->ins_extend, conf->del_extend);
-	profile->xt = gi + ge * dz_max2(conf->max_ins_len, conf->max_del_len);	/* FIXME: X-drop threshold */
-	profile->bonus = conf->full_length_bonus;
-	profile->init  = dz_add_ofs(DZ_CELL_MIN);
+
+	/* (1, xth) */
+	profile->one = 1;
+	profile->xth = gi + ge * dz_max2(conf->max_ins_len, conf->max_del_len);	/* FIXME: X-drop threshold */
+
+	/* gap lengths */
 	profile->max_ins_len = conf->max_ins_len;	/* save raw value */
 	profile->max_del_len = conf->max_del_len;	/* save raw value */
-	debug("gi(%u), ge(%u), xdrop_threshold(%u), full_length_bonus(%u), max_gap_len(%u, %u)", gi, ge, profile->xt, profile->bonus, profile->max_ins_len, profile->max_del_len);
 
+	/* constants */
+	profile->bonus = conf->full_length_bonus;
+	profile->init  = dz_add_ofs(DZ_CELL_MIN);
+
+	debug("gi(%u), ge(%u), xdrop_threshold(%u), full_length_bonus(%u), max_gap_len(%u, %u)", gi, ge, profile->xth, profile->bonus, profile->max_ins_len, profile->max_del_len);
 	return;
 }
 
 static __dz_vectorize
 dz_head_t *dz_slice_root_head(dz_allocator_t *alloc, size_t blen)
 {
+	/* [0, blen + 1) */
+	dz_range_t const range = { 0, blen + 1 };
+	size_t const size = dz_calc_column_size(&range);
+
 	/* malloc the first column */
-	size_t size = dz_calc_column_size(0, blen + 1);
 	return(dz_head(alloc->fp(alloc->ctx, size)));
 }
 
 static __dz_vectorize
-size_t dz_init_root_column(dz_profile_t const *profile, dz_score_conf_t const *conf, dz_swgv_t *col, size_t blen)
+size_t dz_init_root_column(dz_profile_t const *profile, dz_swgv_t *col, size_t blen)
 {
-	__m128i const minv = _mm_set1_epi16(dz_add_ofs(DZ_CELL_MIN));
+	/*
+	 * constant vectors; always use ofs(0) for the root cell
+	 * load vectors; gap vectors must be initialized in advance
+	 */
+	dz_cvec_t cvec __attribute__(( aligned(16) )) = dz_cvec_init_intl(profile, dz_add_ofs(0));
 
-	/* fill the root (the leftmost) column; first init vectors */
-	uint16_t const ins_open = conf->ins_open;
-	uint16_t const ins_extend = conf->ins_extend;
+	/* working vectors */
+	dz_maxv_work_t maxv __attribute__(( aligned(16) ));
+	dz_maxv_init_intl(&maxv, dz_add_ofs(0), profile->xth);
 
-	__m128i const hv = _mm_setr_epi16(
-		dz_add_ofs(0),
-		dz_add_ofs(-(ins_open +     ins_extend)),
-		dz_add_ofs(-(ins_open + 2 * ins_extend)),
-		dz_add_ofs(-(ins_open + 3 * ins_extend)),
-		dz_add_ofs(-(ins_open + 4 * ins_extend)),
-		dz_add_ofs(-(ins_open + 5 * ins_extend)),
-		dz_add_ofs(-(ins_open + 6 * ins_extend)),
-		dz_add_ofs(-(ins_open + 7 * ins_extend))
-	);
-	__m128i const bv = _mm_setr_epi16(
-		dz_add_ofs(-ins_open),
-		dz_add_ofs(-(ins_open +     ins_extend)),
-		dz_add_ofs(-(ins_open + 2 * ins_extend)),
-		dz_add_ofs(-(ins_open + 3 * ins_extend)),
-		dz_add_ofs(-(ins_open + 4 * ins_extend)),
-		dz_add_ofs(-(ins_open + 5 * ins_extend)),
-		dz_add_ofs(-(ins_open + 6 * ins_extend)),
-		dz_add_ofs(-(ins_open + 7 * ins_extend))
-	);
-	__m128i const iev8 = _mm_slli_epi16(_mm_load_si128((__m128i const *)profile->iev), 3);
+	dz_update_work_t uvec __attribute__(( aligned(16) ));
+	dz_update_init(&uvec, &cvec, 1);	/* is_head == 1; root cell loaded here */
+	dz_update_reset_v(&uvec);
 
-	dz_fill_work_t fw;
-	fw.f = minv;
-	fw.e = minv;
-	fw.s = hv;
-	fw.ps   = _mm_setzero_si128();
-	fw.maxv = _mm_setzero_si128();
-	fw.xtv  = _mm_set1_epi16(dz_add_ofs(-profile->xt));
-	fw.col  = col;
+	/* the first vector always survives because the origin has score zero */
+	__m128i const ofsv = _mm_set1_epi16(DZ_SCORE_OFS);
+	dz_update_body(&uvec, &cvec, ofsv);	/* score == 0; maxv updated */
+	dz_update_store(&uvec, &col[0]);	/* X-drop never be true */
 
-	/* until the X-drop test fails on all the cells in a vector */
-	for(size_t p = 0; p < blen; p++) {
-		fw.f = fw.s;
-		print_vector(fw.s);
+	/* p = 1 */ {
+		dz_update_reset_h(&uvec);
+		dz_update_body(&uvec, &cvec, ofsv);
 
-		/* terminate when X-drop condition hold on all the cells */
-		if(dz_fill_test_xdrop(&fw)) {
-			return(p);
-		}
-		dz_fill_store_vector(&fw, p);
-
-		/* reset s vector */
-		if(p == 0) { fw.s = bv; }
-		fw.s = _mm_subs_epu16(fw.s, iev8);		/* iev[i] * 8 */
+		__m128i const sv = dz_update_store(&uvec, &col[1]);
+		if(dz_maxv_is_drop(&maxv, sv)) { return(1); }
 	}
+
+	/* until X-drop */
+	for(size_t p = 2; p < blen; p++) {
+		dz_update_tail(&uvec, &cvec);
+
+		__m128i const sv = dz_update_store(&uvec, &col[p]);
+		if(dz_maxv_is_drop(&maxv, sv)) { return(p); }
+	}
+
+	debug("reached tail, blen(%zu)", blen);
 	return(blen);
 }
 
 static __dz_vectorize
-dz_state_t const *dz_init_root_cap(dz_tail_t *tail, size_t eblk)
+void dz_init_root_cap(dz_state_t *tail, size_t eblk)
 {
 	/* initialize state */
-	dz_state_t state;
-	state.cnt.column  = 0;
-	state.cnt.section = 0;
-	state.range.sblk  = 0;
-	state.range.eblk  = eblk;
-	state.max.score   = 0;						/* without offset */
-	state.max.inc     = dz_add_ofs(0);			/* with offset */
-	state.max.cap     = NULL;
-	tail->state = state;
+	tail->cnt.section = 0;
+	tail->cnt.column  = 0;
+	tail->range.sblk  = 0;
+	tail->range.eblk  = eblk;
 
-	/* dummy */
-	tail->query = NULL;
-	return(&tail->state);
+	/* max tracker */
+	dz_score_init(&tail->max.score);
+	tail->max.cap = NULL;
+	return;
 }
 
 static __dz_vectorize
-void dz_init_root(dz_profile_t *profile, dz_score_conf_t const *conf, dz_allocator_t *alloc)
+dz_forefront_t const *dz_init_root(dz_profile_t const *profile, dz_score_conf_t const *conf, dz_allocator_t *alloc)
 {
 	/* calc vector length; query = NULL for the first (root) column */
 	size_t const max_ins_len = dz_roundup(conf->max_ins_len, DZ_L);
 	size_t const blen = max_ins_len / DZ_L;
 
-	/* fill root head */
+	/* fill root head; stack objects */
 	dz_head_t *head = dz_slice_root_head(alloc, blen);
-	dz_swgv_t *col = dz_init_root_head(head);
+	dz_cap_t *cap   = dz_init_root_head(head);
+	dz_swgv_t *col  = dz_slice_column(cap, 0);
 
 	/* DP matrix */
-	size_t eblk = dz_init_root_column(profile, conf, col, blen);
+	size_t const eblk = dz_init_root_column(profile, col, blen);
 
 	/* tail object */
-	dz_tail_t *tail = dz_tail(dz_cap_column(col, eblk));
-	dz_state_t const *root = dz_init_root_cap(tail, eblk);
-	debug("col(%p), range(%u, %u), tail(%p, %p)", col, root->range.sblk, root->range.eblk, tail, root);
+	dz_state_t *root = dz_state(dz_cap_column(col, eblk));
+	dz_init_root_cap(root, eblk);
+	debug("col(%p), range(%u, %u), tail(%p)", col, root->range.sblk, root->range.eblk, root);
 
-	profile->root = dz_cff(root);
-	return;
+	return(dz_cff(root));
 }
 
 static __dz_vectorize
@@ -2915,7 +3257,7 @@ dz_profile_t *dz_init_profile(dz_allocator_t *alloc, dz_score_conf_t const *conf
 	dz_init_gap_penalties(profile, conf);
 
 	/* allocate first column and fill cells */
-	dz_init_root(profile, conf, alloc);
+	profile->root = dz_init_root(profile, conf, alloc);
 	debug("profile(%p), root(%p)", profile, profile->root);
 	return(profile);
 }
@@ -2923,7 +3265,7 @@ dz_profile_t *dz_init_profile(dz_allocator_t *alloc, dz_score_conf_t const *conf
 static __dz_vectorize
 void dz_destroy_profile(dz_destructor_t *dtor, dz_profile_t *profile)
 {
-	dz_tail_t const *tail = dz_restore_tail(dz_cstate(profile->root));
+	dz_state_t const *tail = dz_cstate(profile->root);
 	dz_cap_t const *head = dz_unwind_cap(dz_ccap(tail));
 
 	dtor->fp(dtor->ctx, (void *)head);
@@ -2942,20 +3284,21 @@ typedef struct {
 } dz_max_pos_t;
 
 static __dz_vectorize
-int64_t dz_calc_max_rpos_core(dz_state_t const *ff)
+int64_t dz_calc_max_rpos_core(dz_query_t const *query, dz_state_t const *ff)
 {
+	dz_unused(query);
+
 	/* max-scoring column */
 	dz_cap_t const *cap = ff->max.cap;
 	if(cap == NULL) { return(0); }
 
 	// dz_tail_t const *tail = dz_restore_tail(ff);
 	dz_cap_t const *prev_cap = dz_unwind_cap(cap);
-	uint32_t const rpos = (dz_is_head(prev_cap) ? 0 : prev_cap->tracker.idx);
+	uint32_t const rpos = (dz_is_head(prev_cap) ? 0 : prev_cap->link.idx);
 
-	debug("tail(%p), prev_cap(%p, %u, %u, %u, %u), is_head(%lu), rpos(%u)",
-		dz_restore_tail(ff),
-		prev_cap, prev_cap->range.sblk, prev_cap->range.eblk, prev_cap->tracker.ch, prev_cap->tracker.idx, dz_is_head(prev_cap),
-		rpos
+	debug("tail(%p), prev_cap(%p, %u, %u, %u, %u), is_head(%u), rpos(%u)",
+		ff, prev_cap, prev_cap->range.sblk, prev_cap->range.eblk, prev_cap->link.rch, prev_cap->link.idx,
+		(uint32_t)dz_is_head(prev_cap), rpos
 	);
 	return(rpos);
 }
@@ -2973,16 +3316,13 @@ uint64_t dz_finalize_qpos(size_t p, uint64_t eq)
 }
 
 static __dz_vectorize
-uint64_t dz_calc_max_qpos_core(dz_state_t const *ff)
+uint64_t dz_calc_max_qpos_core(dz_query_t const *query, dz_state_t const *tail)
 {
-	dz_cap_t const *pcap = ff->max.cap;
+	dz_cap_t const *pcap = tail->max.cap;
 	if(pcap == NULL) { return(0); }
 
 	/* load max score */
-	__m128i const maxv = _mm_set1_epi16(ff->max.inc);	/* offset already included in ff->max.inc */
-
-	/* load query pointer */
-	dz_query_t const *query = dz_restore_tail(ff)->query;
+	__m128i const maxv = _mm_set1_epi16(tail->max.score.inc);	/* offset already included in tail->max.inc */
 
 	/* loac column pointer */
 	dz_swgv_t const *col = dz_restore_column(pcap);
@@ -2991,7 +3331,7 @@ uint64_t dz_calc_max_qpos_core(dz_state_t const *ff)
 
 		/* adjust full-length bonus if needed */
 		#ifdef DZ_FULL_LENGTH_BONUS
-			__m128i const b = dz_query_get_bonus(query, p);
+			__m128i const b = dz_query_get_bonus(query, p + 1 == query->blen);
 			__m128i const s = _mm_add_epi16(v, b);
 		#else
 			dz_unused(query);
@@ -3009,19 +3349,19 @@ uint64_t dz_calc_max_qpos_core(dz_state_t const *ff)
 }
 
 static __dz_vectorize
-dz_max_pos_t dz_calc_max_pos_core(dz_state_t const *ff)
+dz_max_pos_t dz_calc_max_pos_core(dz_query_t const *query, dz_state_t const *tail)
 {
-	dz_cap_t const *pcap = ff->max.cap;
+	dz_cap_t const *pcap = tail->max.cap;
 	if(pcap == NULL) {
 		/* is root */
 		debug("pcap == NULL");
 		return((dz_max_pos_t){ 0, 0 });
 	}
 
-	debug("ff(%p), pcap(%p)", ff, pcap);
+	debug("tail(%p), pcap(%p)", tail, pcap);
 	return((dz_max_pos_t){
-		.rpos = dz_calc_max_rpos_core(ff),
-		.qpos = dz_calc_max_qpos_core(ff)
+		.rpos = dz_calc_max_rpos_core(query, tail),
+		.qpos = dz_calc_max_qpos_core(query, tail)
 	});
 }
 
@@ -3029,8 +3369,17 @@ dz_max_pos_t dz_calc_max_pos_core(dz_state_t const *ff)
 
 
 /*
+ * forward declaration for id; used in traceback
+ */
+static uint32_t dz_extract_id(dz_state_t const *tail);
+
+
+
+
+/*
  * traceback
  */
+
 /* alignment path object */
 typedef struct dz_path_span_s {
 	uint32_t id;
@@ -3106,7 +3455,8 @@ static __dz_vectorize
 uint16_t dz_trace_score_adj(dz_trace_work_t *w)
 {
 	/* w->score is of w->ccap; corresponding adj is saved one before */
-	return(w->score + w->pcap->tracker.adj);
+	debug("score(%d), adj(%d)", w->score, w->pcap->link.adj);
+	return(w->score + w->pcap->link.adj);
 }
 static __dz_vectorize
 uint16_t dz_trace_score_raw(dz_trace_work_t *w)
@@ -3129,13 +3479,11 @@ void dz_trace_push_span(dz_trace_work_t *w, size_t id)
 }
 
 static __dz_vectorize
-int32_t dz_trace_merge_score(dz_state_t const *ff, size_t idx, size_t layer)
+int32_t dz_trace_merge_score(dz_state_t const *tail, size_t idx, size_t layer)
 {
-	/* extract tail */
-	dz_tail_t const *tail = dz_restore_tail(ff);
-
 	/* restore offsetted score; adj == 0 for head */
-	int32_t const base = ff->max.score - dz_rm_ofs(ff->max.inc);
+	// int32_t const base = tail->max.score - dz_rm_ofs(tail->max.score.inc);
+	int32_t const base = dz_score_base(&tail->max.score);
 	int32_t const s = dz_trace_score(layer, dz_ccap(tail), idx) + base;
 	return(s);
 }
@@ -3145,25 +3493,25 @@ uint64_t dz_trace_rewind_merge(dz_trace_work_t *w, size_t layer)
 {
 	/* merging vector; load contents to find an edge */
 	dz_head_t const *head = dz_chead(w->pcap);
-	int32_t const prev_score = dz_trace_score(layer, w->ccap, w->idx) + head->base;
+	int32_t const prev_score = dz_trace_score(layer, w->ccap, w->idx) + dz_score_base(&head->base);
 	debug("head(%p), prev_score(%u)", head, dz_rm_ofs(prev_score));
 
 	/* load incoming vectors */
 	size_t const vidx = dz_trace_vector_idx(w->idx);
-	size_t const fcnt = head->fcnt;
+	size_t const fcnt = dz_link_fcnt(&head->link);
 	dz_state_t const **farr = dz_cpstate(w->pcap) - fcnt;
 	for(size_t i = 0; i < fcnt; i++) {
-		dz_state_t const *ff = farr[i];
-		debug("i(%zu), ff(%p)", i, ff);
+		dz_state_t const *tail = farr[i];
+		debug("i(%zu), tail(%p)", i, tail);
 
 		/* skip if the cell is out of the vector */
-		if(!dz_inside(ff->range.sblk, vidx, ff->range.eblk)) { continue; }
+		if(!dz_inside(tail->range.sblk, vidx, tail->range.eblk)) { continue; }
 
 		/* adj[i] = w.max - (ffs[i]->max - ffs[i]->inc); base = max - inc */
-		int32_t const score = dz_trace_merge_score(ff, w->idx, layer);
+		int32_t const score = dz_trace_merge_score(tail, w->idx, layer);
 		debug("score(%u), prev_score(%u)", dz_rm_ofs(score), dz_rm_ofs(prev_score));
 		if(prev_score == score) {
-			w->pcap = dz_ccap(dz_restore_tail(ff));
+			w->pcap = dz_ccap(tail);
 			return(1);
 		}
 	}
@@ -3205,7 +3553,7 @@ uint64_t dz_trace_unwind_h(dz_trace_work_t *w, size_t layer)
 		dz_trace_reload_section(w, layer);
 
 		/* push segment info */
-		uint32_t const id = dz_extract_id(dz_ctail(w->pcap));
+		uint32_t const id = dz_extract_id(dz_cstate(w->pcap));
 		dz_trace_push_span(w, id);
 
 		/* reload score */
@@ -3214,9 +3562,9 @@ uint64_t dz_trace_unwind_h(dz_trace_work_t *w, size_t layer)
 
 	/* return the reference-side base */
 	w->rlen++;
-	w->rch = w->pcap->tracker.ch;
+	w->rch = w->pcap->link.rch;
 
-	debug("pcap(%p, %x), cap(%p, %x)", w->pcap, w->pcap->tracker.ch, w->ccap, w->ccap->tracker.ch);
+	debug("pcap(%p, %x), cap(%p, %x)", w->pcap, w->pcap->link.rch, w->ccap, w->ccap->link.rch);
 	return(0);
 }
 
@@ -3324,39 +3672,38 @@ uint64_t dz_trace_eat_del(dz_trace_work_t *w) {
 }
 
 static __dz_vectorize
-void dz_trace_init_aln(dz_alignment_t *aln, dz_state_t const *ff, size_t idx)
+void dz_trace_init_aln(dz_alignment_t *aln, dz_state_t const *tail, size_t idx)
 {
-	// aln->rrem  = dz_calc_max_rpos_core(ff);
-	aln->score = ff->max.score;
+	// aln->rrem  = dz_calc_max_rpos_core(tail);
+	aln->score = dz_score_abs(&tail->max.score);
 	aln->query_length = idx;
 
-	debug("ff(%p), idx(%zu)", ff, idx);
-	debug("score(%d)", ff->max.score);
+	debug("tail(%p), idx(%zu)", tail, idx);
+	debug("score(%d)", tail->max.score.abs);
 	return;
 }
 
 static __dz_vectorize
-void dz_trace_allocate_aln(dz_trace_work_t *w, dz_arena_t *mem, dz_state_t const *ff, size_t idx)
+void dz_trace_allocate_aln(dz_trace_work_t *w, dz_arena_t *mem, dz_state_t const *tail, size_t idx)
 {
 	/* allocate aln object */
 	size_t aln_size = (sizeof(dz_alignment_t)
-		+ (ff->cnt.section + 6) * sizeof(dz_path_span_t)
-		+ dz_roundup(ff->cnt.column + idx + 16, 8) * sizeof(uint8_t)	/* +1 for tail '\0' */
+		+ (tail->cnt.section + 6) * sizeof(dz_path_span_t)
+		+ dz_roundup(tail->cnt.column + idx + 16, 8) * sizeof(uint8_t)	/* +1 for tail '\0' */
 	);
 	w->aln = (dz_alignment_t *)dz_arena_malloc(mem, aln_size);
-	dz_trace_init_aln(w->aln, ff, idx);
+	dz_trace_init_aln(w->aln, tail, idx);
 
 	/* slice section and path */
 	dz_path_span_t *span = (dz_path_span_t *)(w->aln + 1);
-	w->span.ptr  = span + ff->cnt.section + 4;
-	w->span.base = span + ff->cnt.section + 4;
+	w->span.ptr  = span + tail->cnt.section + 4;
+	w->span.base = span + tail->cnt.section + 4;
 
 	uint8_t *path = (uint8_t *)(w->span.base + 2);
-	w->path.ptr  = path + ff->cnt.column + idx;
-	w->path.base = path + ff->cnt.column + idx;
+	w->path.ptr  = path + tail->cnt.column + idx;
+	w->path.base = path + tail->cnt.column + idx;
 
 	/* push tail sentinels */
-	dz_tail_t const *tail = dz_restore_tail(ff);
 	uint32_t const id = dz_extract_id(tail);
 	dz_trace_push_span(w, id);
 	// *w->path.ptr = '\0';		/* make sure readable as C string */
@@ -3365,11 +3712,11 @@ void dz_trace_allocate_aln(dz_trace_work_t *w, dz_arena_t *mem, dz_state_t const
 }
 
 static __dz_vectorize
-void dz_trace_init_work(dz_trace_work_t *w, dz_profile_t const *profile, dz_state_t const *ff, size_t idx)
+void dz_trace_init_work(dz_trace_work_t *w, dz_profile_t const *profile, dz_query_t const *query, dz_state_t const *tail, size_t idx)
 {
 	/* save lengths */
 	w->rlen    = 0;		/* is unknown before traceback */
-	w->query   = dz_restore_tail(ff)->query;
+	w->query   = query;
 	w->ie = profile->iev[0];
 	w->de = profile->dev[0];
 
@@ -3377,7 +3724,7 @@ void dz_trace_init_work(dz_trace_work_t *w, dz_profile_t const *profile, dz_stat
 	memset(w->cnt, 0, 4 * sizeof(uint32_t));
 
 	/* load max column pointers */
-	w->pcap = ff->max.cap;
+	w->pcap = tail->max.cap;
 	w->ccap = NULL;
 	w->idx  = idx;
 
@@ -3389,6 +3736,10 @@ void dz_trace_init_work(dz_trace_work_t *w, dz_profile_t const *profile, dz_stat
 static __dz_vectorize
 void dz_trace_finalize_path(dz_alignment_t *aln, uint8_t *path, uint8_t *base)
 {
+	/* put head cap */
+	path[-1] = '\0';
+
+	/* save pointer and length */
 	aln->path = path;
 	aln->path_length = base - path;
 	return;
@@ -3438,18 +3789,18 @@ dz_alignment_t const *dz_trace_finalize(dz_trace_work_t *w)
 }
 
 static __dz_vectorize
-dz_alignment_t const *dz_trace_core(dz_arena_t *mem, dz_profile_t const *profile, dz_state_t const *ff, dz_trace_get_match_t get_match)
+dz_alignment_t const *dz_trace_core(dz_arena_t *mem, dz_profile_t const *profile, dz_query_t const *query, dz_trace_get_match_t get_match, dz_state_t const *ff)
 {
 	/* no object is returned for root */
 	if(ff->max.cap == NULL) { return(NULL); }
 
 	/* detect pos */
-	uint64_t const idx = dz_calc_max_qpos_core(ff);	/* vector index, cell index */
+	uint64_t const idx = dz_calc_max_qpos_core(query, ff);	/* vector index, cell index */
 	debug("idx(%zu), root(%p)", (size_t)idx, profile->root);
 
 	/* init working buffer */
 	dz_trace_work_t w;
-	dz_trace_init_work(&w, profile, ff, idx);
+	dz_trace_init_work(&w, profile, query, ff, idx);
 	dz_trace_allocate_aln(&w, mem, ff, idx);
 
 	/* core loop */
@@ -3472,8 +3823,264 @@ dz_alignment_t const *dz_trace_core(dz_arena_t *mem, dz_profile_t const *profile
 /*
  * wrapped APIs
  */
-#if defined(DZ_WRAPPED_API) && (DZ_WRAPPED_API != 0)
+#if !(defined(DZ_WRAPPED_API) && (DZ_WRAPPED_API != 0))
 
+dz_static_assert(DZ_TAIL_MARGIN == sizeof(dz_state_t));
+
+static __dz_vectorize
+uint32_t dz_extract_id(dz_state_t const *tail)
+{
+	dz_unused(tail);
+	return(0);
+}
+
+#else	/* DZ_WRAPPED_API */
+
+
+/*
+ * metadata handling:
+ * reference sequence metadata (will not be exposed outside)
+ */
+typedef struct dz_meta_s {
+	dz_query_t const *query;
+	uint32_t rid, dir;
+} dz_meta_t;
+
+dz_static_assert(DZ_TAIL_MARGIN == sizeof(dz_state_t) + sizeof(dz_meta_t));
+
+#define dz_meta(_p)					( (dz_meta_t *)(_p) )
+#define dz_cmeta(_p)				( (dz_meta_t const *)(_p) )
+
+
+static __dz_vectorize
+void dz_save_meta(dz_state_t const *tail, dz_meta_t meta)
+{
+	/* just save */
+	dz_meta_t *p = dz_meta(tail + 1);
+	*p = meta;
+	return;
+}
+
+static __dz_vectorize
+dz_meta_t dz_extract_meta(dz_state_t const *tail)
+{
+	dz_meta_t const *p = dz_cmeta(tail + 1);
+	dz_meta_t meta = *p;
+	return(meta);
+}
+
+static __dz_vectorize
+dz_query_t const *dz_extract_query(dz_state_t const *tail)
+{
+	dz_meta_t const *p = dz_cmeta(tail + 1);
+	return(p->query);
+}
+
+static __dz_vectorize
+uint32_t dz_extract_id(dz_state_t const *tail)
+{
+	dz_meta_t const *p = dz_cmeta(tail + 1);
+	return(p->rid);
+}
+
+
+
+
+#if defined(DZ_NUCL_ASCII)
+// #if defined(DZ_WRAPPED_API) && (DZ_WRAPPED_API != 0)
+static __dz_vectorize
+dz_query_t *dz_pack_query_intl(dz_t *self, char const *query, size_t qlen, uint32_t dir)
+{
+	dz_pack_query_t pack = {
+		.dir      = dir,
+		.calc_dim = dz_query_calc_dim_ascii,
+		.conv     = dz_query_conv_ascii
+	};
+	return(dz_pack_query_core(self->mem, self->profile, (uint8_t const *)query, qlen, &pack));
+}
+
+static __dz_vectorize
+dz_state_t const *dz_extend_intl(dz_arena_t *mem, dz_profile_t const *profile, dz_query_t const *query, dz_state_t const **ff, size_t fcnt, char const *ref, size_t rlen, uint32_t dir)
+{
+	dz_fetcher_ascii_t w __attribute__(( aligned(16) ));
+	dz_fill_fetcher_init_ascii(&w, (uint8_t const *)ref, rlen, dir);
+
+	dz_fetcher_t fetcher = {
+		.opaque      = (void *)&w,
+		.fetch_next  = (dz_fill_fetch_next_t)dz_fill_fetch_next_ascii,
+		.get_profile = (dz_fill_get_profile_t)dz_fill_get_profile_ascii,
+		.get_bound   = NULL
+	};
+	return(dz_extend_core(mem, profile, query, &fetcher, ff, fcnt));
+}
+
+static __dz_vectorize
+dz_alignment_t const *dz_trace_intl(dz_arena_t *mem, dz_profile_t const *profile, dz_query_t const *query, dz_state_t const *ff)
+{
+	/* just wrap */
+	return(dz_trace_core(mem, profile, query, (dz_trace_get_match_t)dz_trace_get_match_ascii, ff));
+}
+// #endif
+
+
+
+#elif defined(DZ_NUCL_2BIT)
+// #if defined(DZ_WRAPPED_API) && (DZ_WRAPPED_API != 0)
+static __dz_vectorize
+dz_query_t *dz_pack_query_intl(dz_t *self, char const *query, size_t qlen, uint32_t dir)
+{
+	dz_pack_query_t pack = {
+		.dir      = dir,
+		.calc_dim = dz_query_calc_dim_2bit,
+		.conv     = dz_query_conv_2bit
+	};
+	return(dz_pack_query_core(self->mem, self->profile, (uint8_t const *)query, qlen, &pack));
+}
+
+static __dz_vectorize
+dz_state_t const *dz_extend_intl(dz_arena_t *mem, dz_profile_t const *profile, dz_query_t const *query, dz_state_t const **ff, size_t fcnt, char const *ref, size_t rlen, uint32_t dir)
+{
+	dz_fetcher_2bit_t w __attribute__(( aligned(16) ));
+	dz_fill_fetcher_init_2bit(&w, (uint8_t const *)ref, rlen, dir);
+
+	dz_fetcher_t fetcher = {
+		.opaque      = (void *)&w,
+		.fetch_next  = (dz_fill_fetch_next_t)dz_fill_fetch_next_2bit,
+		.get_profile = (dz_fill_get_profile_t)dz_fill_get_profile_2bit,
+		.get_bound   = NULL
+	};
+	return(dz_extend_core(mem, profile, query, &fetcher, ff, fcnt));
+}
+
+static __dz_vectorize
+dz_alignment_t const *dz_trace_intl(dz_arena_t *mem, dz_profile_t const *profile, dz_query_t const *query, dz_state_t const *ff)
+{
+	/* just wrap */
+	return(dz_trace_core(mem, profile, query, (dz_trace_get_match_t)dz_trace_get_match_2bit, ff));
+}
+// #endif
+
+
+
+#elif defined(DZ_NUCL_4BIT)
+// #if defined(DZ_WRAPPED_API) && (DZ_WRAPPED_API != 0)
+static __dz_vectorize
+dz_query_t *dz_pack_query_intl(dz_t *self, char const *query, size_t qlen, uint32_t dir)
+{
+	dz_pack_query_t pack = {
+		.dir      = dir,
+		.calc_dim = dz_query_calc_dim_4bit,
+		.conv     = dz_query_conv_4bit
+	};
+	return(dz_pack_query_core(self->mem, self->profile, (uint8_t const *)query, qlen, &pack));
+}
+
+static __dz_vectorize
+dz_state_t const *dz_extend_intl(dz_arena_t *mem, dz_profile_t const *profile, dz_query_t const *query, dz_state_t const **ff, size_t fcnt, char const *ref, size_t rlen, uint32_t dir)
+{
+	dz_fetcher_4bit_t w __attribute__(( aligned(16) ));
+	dz_fill_fetcher_init_4bit(&w, (uint8_t const *)ref, rlen, dir);
+
+	dz_fetcher_t fetcher = {
+		.opaque      = (void *)&w,
+		.fetch_next  = (dz_fill_fetch_next_t)dz_fill_fetch_next_4bit,
+		.get_profile = (dz_fill_get_profile_t)dz_fill_get_profile_4bit,
+		.get_bound   = NULL
+	};
+	return(dz_extend_core(mem, profile, query, &fetcher, ff, fcnt));
+}
+
+static __dz_vectorize
+dz_alignment_t const *dz_trace_intl(dz_arena_t *mem, dz_profile_t const *profile, dz_query_t const *query, dz_state_t const *ff)
+{
+	/* just wrap */
+	return(dz_trace_core(mem, profile, query, (dz_trace_get_match_t)dz_trace_get_match_4bit, ff));
+}
+// #endif
+
+
+
+#elif defined(DZ_PROTEIN)
+// #if defined(DZ_WRAPPED_API) && (DZ_WRAPPED_API != 0)
+static __dz_vectorize
+dz_query_t *dz_pack_query_intl(dz_t *self, char const *query, size_t qlen, uint32_t dir)
+{
+	dz_pack_query_t pack = {
+		.dir      = dir,
+		.calc_dim = dz_query_calc_dim_protein,
+		.conv     = dz_query_conv_protein
+	};
+	return(dz_pack_query_core(self->mem, self->profile, (uint8_t const *)query, qlen, &pack));
+}
+
+static __dz_vectorize
+dz_state_t const *dz_extend_intl(dz_arena_t *mem, dz_profile_t const *profile, dz_query_t const *query, dz_state_t const **ff, size_t fcnt, char const *ref, size_t rlen, uint32_t dir)
+{
+	dz_fetcher_protein_t w __attribute__(( aligned(16) ));
+	dz_fill_fetcher_init_protein(&w, (uint8_t const *)ref, rlen, dir);
+
+	dz_fetcher_t fetcher = {
+		.opaque      = (void *)&w,
+		.fetch_next  = (dz_fill_fetch_next_t)dz_fill_fetch_next_protein,
+		.get_profile = (dz_fill_get_profile_t)dz_fill_get_profile_protein,
+		.get_bound   = NULL
+	};
+	return(dz_extend_core(mem, profile, query, &fetcher, ff, fcnt));
+}
+
+static __dz_vectorize
+dz_alignment_t const *dz_trace_intl(dz_arena_t *mem, dz_profile_t const *profile, dz_query_t const *query, dz_state_t const *ff)
+{
+	/* just wrap */
+	return(dz_trace_core(mem, profile, query, (dz_trace_get_match_t)dz_trace_get_match_protein, ff));
+}
+// #endif
+
+
+
+#elif defined(DZ_REALIGNER)
+// #if defined(DZ_WRAPPED_API) && (DZ_WRAPPED_API != 0)
+static __dz_vectorize
+dz_query_t *dz_pack_query_intl(dz_t *self, char const *query, size_t qlen, uint32_t dir)
+{
+	dz_pack_query_t pack = {
+		.dir      = dir,
+		.calc_dim = dz_query_calc_dim_realigner,
+		.conv     = dz_query_conv_realigner
+	};
+	return(dz_pack_query_core(self->mem, self->profile, (uint8_t const *)query, qlen, &pack));
+}
+
+static __dz_vectorize
+dz_state_t const *dz_extend_intl(dz_arena_t *mem, dz_profile_t const *profile, dz_query_t const *query, dz_state_t const **ff, size_t fcnt, char const *ref, size_t rlen, uint32_t dir)
+{
+	dz_fetcher_realigner_t w __attribute__(( aligned(16) ));
+	dz_fill_fetcher_init_realigner(&w, dir, (dz_realigner_node_t const *)ref);
+
+	dz_fetcher_t fetcher = {
+		.opaque      = (void *)&w,
+		.fetch_next  = (dz_fill_fetch_next_t)dz_fill_fetch_next_realigner,
+		.get_profile = (dz_fill_get_profile_t)dz_fill_get_profile_realigner,
+		.get_bound   = (dz_fill_get_bound_t)dz_fill_get_bound_realigner
+	};
+	return(dz_extend_core(mem, profile, query, &fetcher, ff, fcnt));
+}
+
+static __dz_vectorize
+dz_alignment_t const *dz_trace_intl(dz_arena_t *mem, dz_profile_t const *profile, dz_query_t const *query, dz_state_t const *ff)
+{
+	/* just wrap */
+	return(dz_trace_core(mem, profile, query, (dz_trace_get_match_t)dz_trace_get_match_realigner, ff));
+}
+// #endif
+#endif
+
+
+
+
+/*
+ * API implementations
+ */
 static __dz_vectorize
 dz_t *dz_initx(
 	int8_t const *score_matrix,
@@ -3602,7 +4209,12 @@ dz_forefront_t const *dz_extend(
 	if(tail == NULL) { return(NULL); }
 
 	/* save id and direction */
-	dz_save_meta(tail, ((dz_meta_t){ .rid = rid, .dir = dir }));
+	dz_meta_t const meta = {
+		.query = query,
+		.rid   = rid,
+		.dir   = dir
+	};
+	dz_save_meta(tail, meta);
 	return(dz_cff(tail));
 }
 
@@ -3629,7 +4241,12 @@ dz_forefront_t const *dz_scan(
 	if(tail == NULL) { return(NULL); }
 
 	/* save id and direction */
-	dz_save_meta(tail, ((dz_meta_t){ .rid = rid, .dir = dir }));
+	dz_meta_t const meta = {
+		.query = query,
+		.rid   = rid,
+		.dir   = dir
+	};
+	dz_save_meta(tail, meta);
 	return(dz_cff(tail));
 }
 
@@ -3640,13 +4257,13 @@ int64_t dz_calc_max_rpos(dz_t *self, dz_forefront_t const *ff)
 
 	/* zero if invalid */
 	if(ff == NULL) { return(0); }
+	dz_state_t const *tail = dz_cstate(ff);
+	dz_meta_t const meta = dz_extract_meta(tail);
 
 	/* calculate tail rpos, convert to signed */
-	int64_t rpos = dz_calc_max_rpos_core(dz_cstate(ff));
+	int64_t rpos = dz_calc_max_rpos_core(meta.query, tail);
 
 	/* fold direction in */
-	dz_tail_t const *tail = dz_restore_tail(dz_cstate(ff));
-	dz_meta_t meta = dz_extract_meta(tail);
 	return(meta.dir ? -rpos : rpos);	/* negate if reverse */
 }
 
@@ -3654,7 +4271,10 @@ static __dz_vectorize
 uint64_t dz_calc_max_qpos(dz_t *self, dz_forefront_t const *ff)
 {
 	dz_unused(self);
-	return(dz_calc_max_qpos_core(dz_cstate(ff)));
+
+	dz_state_t const *tail = dz_cstate(ff);
+	dz_meta_t const meta = dz_extract_meta(tail);
+	return(dz_calc_max_qpos_core(meta.query, tail));
 }
 
 static __dz_vectorize
@@ -3663,14 +4283,25 @@ uint64_t dz_calc_max_pos(dz_t *self, dz_forefront_t const *ff)
 	dz_unused(self);
 
 	if(ff == NULL) { return(0); }
-	dz_max_pos_t pos = dz_calc_max_pos_core(dz_cstate(ff));
+	dz_state_t const *tail = dz_cstate(ff);
+	dz_meta_t const meta = dz_extract_meta(tail);
+
+	dz_max_pos_t const pos = dz_calc_max_pos_core(meta.query, tail);
 
 	/* fold direction */
-	dz_tail_t const *tail = dz_restore_tail(dz_cstate(ff));
-	dz_meta_t meta = dz_extract_meta(tail);
 	int64_t const rpos  = pos.rpos;
 	int64_t const rdpos = meta.dir ? -rpos : rpos;
 	return((uint64_t)(rdpos<<32) | (uint64_t)pos.qpos);
+}
+
+static __dz_vectorize
+dz_alignment_t const *dz_trace(
+	dz_t *self,
+	dz_forefront_t const *ff)
+{
+	dz_state_t const *tail  = dz_cstate(ff);
+	dz_meta_t const meta = dz_extract_meta(tail);
+	return(dz_trace_intl(self->mem, self->profile, meta.query, tail));
 }
 
 
