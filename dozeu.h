@@ -3721,6 +3721,10 @@ void dz_trace_init_work(dz_trace_work_t *w, dz_profile_t const *profile, dz_quer
 static __dz_vectorize
 void dz_trace_finalize_path(dz_alignment_t *aln, uint8_t *path, uint8_t *base)
 {
+	/* put head cap */
+	path[-1] = '\0';
+
+	/* save pointer and length */
 	aln->path = path;
 	aln->path_length = base - path;
 	return;
