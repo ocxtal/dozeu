@@ -1171,6 +1171,7 @@ uint64_t dz_arena_push_stack(dz_arena_t *mem, size_t size)
 		blk->next = NULL;
 		blk->size = size;
 	}
+
 	/* follow a forward link and init stack pointers */
 	mem->stack.curr = mem->stack.curr->next;
 	mem->stack.top = (uint8_t *)dz_roundup((uintptr_t)(mem->stack.curr + 1), DZ_MEM_ALIGN_SIZE);
@@ -2223,12 +2224,12 @@ typedef struct {
 
 	/* 16bytes */
 	uint32_t bmax, blen;
-	dz_link_t link;
+	uint32_t zero[2];
 
 	/* 16bytes */
 	uint32_t one;		/* we expect we have 0x01ULL here */
 	uint32_t xth;		/* xdrop threshold */
-	uint32_t zero[2];
+	dz_link_t link;
 } dz_ctx_t;
 
 
@@ -2242,8 +2243,8 @@ dz_static_assert(offsetof(dz_ctx_t, cnt.section) == 8);
 dz_static_assert(offsetof(dz_ctx_t, cnt.column)  == 12);
 dz_static_assert(offsetof(dz_ctx_t, max.score.inc) == 16);
 dz_static_assert(offsetof(dz_ctx_t, max.score.abs) == 20);
-dz_static_assert(offsetof(dz_ctx_t, link.idx) == 44);
 dz_static_assert(offsetof(dz_ctx_t, one)      == 48);
+dz_static_assert(offsetof(dz_ctx_t, link.idx) == 60);
 
 dz_static_assert(offsetof(dz_profile_t, xth) - offsetof(dz_profile_t, one) == 4);
 
@@ -2258,7 +2259,7 @@ void dz_ctx_init(dz_ctx_t *ctx, dz_state_merge_t const merged, dz_profile_t cons
 
 	/* we expect upper 64bit is always cleared out; and we have 0x8000 in the lowest 32bit */
 	__m128i const one_xth = _mm_loadl_epi64((__m128i const *)&profile->one);
-	_mm_store_si128((__m128i *)&ctx->one, one_xth);	/* clear out upper 64bits; dz_link_t */
+	_mm_store_si128((__m128i *)&ctx->one, one_xth);				/* clear out upper 64bits; dz_link_t */
 	return;
 }
 
