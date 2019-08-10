@@ -4480,31 +4480,43 @@ unittest( "extend.base" ) {
 		);
 		dz_forefront_t const *forefront = NULL;
 
-		/* nothing occurs */
+		/* nothing happens */
 		forefront = dz_extend(dz, q, NULL, 0, NULL, 0, 1);
 		ut_assert(forefront == NULL);
 		forefront = dz_extend(dz, q, NULL, 0, "", 0, 2);
 		ut_assert(forefront == NULL);
 		forefront = dz_extend(dz, q, dz_root(dz), 1, "", 0, 3);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(0, 0, 0, 0), "max(%u), cell(%u)", forefront->max, dz_ut_sel(0, 0, 0, 0));
+		ut_assert(forefront != NULL && forefront->cnt.section == 1, "cnt.section(%u), cell(%u)", forefront->cnt.section, 1);
+		ut_assert(forefront != NULL && forefront->cnt.column  == 0, "cnt.column(%u), cell(%u)",  forefront->cnt.column,  0);
 
 		/* extend */
 		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("A", "\x0", "\x1", "M"), 1, 4);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(2, 2, 2, 5), "max(%u), cell(%u)", forefront->max, dz_ut_sel(2, 2, 2, 5));
+		ut_assert(forefront != NULL && forefront->cnt.section == 1, "cnt.section(%u), cell(%u)", forefront->cnt.section, 1);
+		ut_assert(forefront != NULL && forefront->cnt.column  == 1, "cnt.column(%u), cell(%u)",  forefront->cnt.column,  1);
 
 		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AG", "\x0\x2", "\x1\x4", "MA"), 2, 5);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(4, 4, 4, 9), "max(%u), cell(%u)", forefront->max, dz_ut_sel(4, 4, 4, 9));
+		ut_assert(forefront != NULL && forefront->cnt.section == 1, "cnt.section(%u), cell(%u)", forefront->cnt.section, 1);
+		ut_assert(forefront != NULL && forefront->cnt.column  == 2, "cnt.column(%u), cell(%u)",  forefront->cnt.column,  2);
 		if(trial == 1) { continue; }
 
 		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTT", "\x0\x2\x0\x3\x3\x3\x3", "\x1\x4\x1\x8\x8\x8\x8", "MASLVQT"), 7, 6);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(9, 9, 9, 28), "max(%u), cell(%u)", forefront->max, dz_ut_sel(9, 9, 9, 28));
+		ut_assert(forefront != NULL && forefront->cnt.section == 1, "cnt.section(%u), cell(%u)", forefront->cnt.section, 1);
+		ut_assert(forefront != NULL && forefront->cnt.column  == 7, "cnt.column(%u), cell(%u)",  forefront->cnt.column,  7);
 		if(trial == 2) { continue; }
 
 		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTTC", "\x0\x2\x0\x3\x3\x3\x3\x1", "\x1\x4\x1\x8\x8\x8\x8\x2", "MASLVQTG"), 8, 7);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(11, 11, 11, 34), "max(%u), cell(%u)", forefront->max, dz_ut_sel(11, 11, 11, 34));
+		ut_assert(forefront != NULL && forefront->cnt.section == 1, "cnt.section(%u), cell(%u)", forefront->cnt.section, 1);
+		ut_assert(forefront != NULL && forefront->cnt.column  == 8, "cnt.column(%u), cell(%u)",  forefront->cnt.column,  8);
 
 		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTTCA", "\x0\x2\x0\x3\x3\x3\x3\x1\x0", "\x1\x4\x1\x8\x8\x8\x8\x2\x1", "MASLVQTGK"), 9, 8);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(13, 13, 13, 39), "max(%u), cell(%u)", forefront->max, dz_ut_sel(13, 13, 13, 39));
+		ut_assert(forefront != NULL && forefront->cnt.section == 1, "cnt.section(%u), cell(%u)", forefront->cnt.section, 1);
+		ut_assert(forefront != NULL && forefront->cnt.column  == 9, "cnt.column(%u), cell(%u)",  forefront->cnt.column,  9);
 
 		dz_unused(forefront);
 	}
@@ -4549,23 +4561,43 @@ unittest( "extend.base.revcomp" ) {
 #endif
 		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AG", "\x0\x2", "\x1\x4", "MA"), 2, 5);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(4, 4, 4, 9));
+		ut_assert(forefront != NULL && forefront->cnt.section == 1, "cnt.section(%u), cell(%u)", forefront->cnt.section, 1);
+		ut_assert(forefront != NULL && forefront->cnt.column  == 2, "cnt.column(%u), cell(%u)",  forefront->cnt.column,  2);
 		if(trial == 1) { continue; }
+
 
 		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTT", "\x0\x2\x0\x3\x3\x3\x3", "\x1\x4\x1\x8\x8\x8\x8", "MASLVQT"), 7, 6);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(9, 9, 9, 28));
+		ut_assert(forefront != NULL && forefront->cnt.section == 1, "cnt.section(%u), cell(%u)", forefront->cnt.section, 1);
+		ut_assert(forefront != NULL && forefront->cnt.column  == 7, "cnt.column(%u), cell(%u)",  forefront->cnt.column,  7);
+
 		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel(&"AAAATCT"[7], &"\x0\x0\x0\x0\x3\x1\x3"[7], &"\x1\x1\x1\x1\x8\x2\x8"[7], "MASLVQT"), -7, 6);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(9, 9, 9, 28));
+		ut_assert(forefront != NULL && forefront->cnt.section == 1, "cnt.section(%u), cell(%u)", forefront->cnt.section, 1);
+		ut_assert(forefront != NULL && forefront->cnt.column  == 7, "cnt.column(%u), cell(%u)",  forefront->cnt.column,  7);
 		if(trial == 2) { continue; }
+
 
 		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTTC", "\x0\x2\x0\x3\x3\x3\x3\x1", "\x1\x4\x1\x8\x8\x8\x8\x2", "MASLVQTG"), 8, 7);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(11, 11, 11, 34));
+		ut_assert(forefront != NULL && forefront->cnt.section == 1, "cnt.section(%u), cell(%u)", forefront->cnt.section, 1);
+		ut_assert(forefront != NULL && forefront->cnt.column  == 8, "cnt.column(%u), cell(%u)",  forefront->cnt.column,  8);
+
 		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel(&"GAAAATCT"[8], &"\x2\x0\x0\x0\x0\x3\x1\x3"[8], &"\x4\x1\x1\x1\x1\x8\x2\x8"[8], "MASLVQTG"), -8, 7);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(11, 11, 11, 28));
+		ut_assert(forefront != NULL && forefront->cnt.section == 1, "cnt.section(%u), cell(%u)", forefront->cnt.section, 1);
+		ut_assert(forefront != NULL && forefront->cnt.column  == 8, "cnt.column(%u), cell(%u)",  forefront->cnt.column,  8);
+
 
 		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTTCA", "\x0\x2\x0\x3\x3\x3\x3\x1\x0", "\x1\x4\x1\x8\x8\x8\x8\x2\x1", "MASLVQTGK"), 9, 8);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(13, 13, 13, 39));
+		ut_assert(forefront != NULL && forefront->cnt.section == 1, "cnt.section(%u), cell(%u)", forefront->cnt.section, 1);
+		ut_assert(forefront != NULL && forefront->cnt.column  == 9, "cnt.column(%u), cell(%u)",  forefront->cnt.column,  9);
+
 		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel(&"TGAAAATCT"[9], &"\x3\x2\x0\x0\x0\x0\x3\x1\x3"[9], &"\x8\x4\x1\x1\x1\x1\x8\x2\x8"[9], "MASLVQTGK"), -9, 8);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(13, 13, 13, 28));
+		ut_assert(forefront != NULL && forefront->cnt.section == 1, "cnt.section(%u), cell(%u)", forefront->cnt.section, 1);
+		ut_assert(forefront != NULL && forefront->cnt.column  == 9, "cnt.column(%u), cell(%u)",  forefront->cnt.column,  9);
 
 		dz_unused(forefront);
 	}
@@ -4594,9 +4626,13 @@ unittest( "extend.small" ) {
 		 */
 		forefronts[0] = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AG", "\x0\x2", "\x1\x4", "MA"), 2, 1);
 		ut_assert(forefronts[0] != NULL && forefronts[0]->max == dz_ut_sel(4, 4, 4, 9));
+		ut_assert(forefronts[0] != NULL && forefronts[0]->cnt.section == 1);
+		ut_assert(forefronts[0] != NULL && forefronts[0]->cnt.column  == 2);
 
 		forefronts[1] = dz_extend(dz, q, &forefronts[0], 1, dz_ut_sel("C", "\x1", "\x2", "T"), 1, 2);
 		ut_assert(forefronts[1] != NULL && forefronts[1]->max == dz_ut_sel(6, 6, 6, 14));
+		ut_assert(forefronts[1] != NULL && forefronts[1]->cnt.section == 2);
+		ut_assert(forefronts[1] != NULL && forefronts[1]->cnt.column  == 3);
 		if(trial == 1) { continue; }
 
 		forefronts[2] = dz_extend(dz, q, &forefronts[0], 2, dz_ut_sel("TTTT", "\x3\x3\x3\x3", "\x8\x8\x8\x8", "LVQT"), 4, 3);
@@ -4605,13 +4641,19 @@ unittest( "extend.small" ) {
 			continue;
 		}
 		ut_assert(forefronts[2] != NULL && forefronts[2]->max == dz_ut_sel(14, 14, 14, 32));
+		ut_assert(forefronts[2] != NULL && forefronts[2]->cnt.section == 3);
+		ut_assert(forefronts[2] != NULL && forefronts[2]->cnt.column  == 7);
 		if(trial == 3) { continue; }
 
 		forefronts[3] = dz_extend(dz, q, &forefronts[2], 1, dz_ut_sel("CATT", "\x1\x0\x3\x3", "\x2\x1\x8\x8", "CKAK"), 4, 4);
 		ut_assert(forefronts[3] != NULL && forefronts[3]->max == dz_ut_sel(22, 22, 22, 43));
+		ut_assert(forefronts[3] != NULL && forefronts[3]->cnt.section == 4);
+		ut_assert(forefronts[3] != NULL && forefronts[3]->cnt.column  == 11);
 
 		forefronts[4] = dz_extend(dz, q, &forefronts[2], 2, dz_ut_sel("CTGA", "\x1\x3\x2\x0", "\x2\x8\x4\x1", "QLTL"), 4, 5);
 		ut_assert(forefronts[4] != NULL && forefronts[4]->max == dz_ut_sel(30, 30, 30, 61));
+		ut_assert(forefronts[4] != NULL && forefronts[4]->cnt.section == 5);
+		ut_assert(forefronts[4] != NULL && forefronts[4]->cnt.column  == 15);
 	}
 	dz_destroy(dz);
 }
