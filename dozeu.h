@@ -3285,7 +3285,7 @@ typedef struct {
 } dz_max_pos_t;
 
 static __dz_vectorize
-int64_t dz_calc_max_rpos_core(dz_query_t const *query, dz_state_t const *ff)
+uint32_t dz_calc_max_rpos_core(dz_query_t const *query, dz_state_t const *ff)
 {
 	dz_unused(query);
 
@@ -3305,7 +3305,7 @@ int64_t dz_calc_max_rpos_core(dz_query_t const *query, dz_state_t const *ff)
 }
 
 static __dz_vectorize
-uint64_t dz_finalize_qpos(size_t p, uint64_t eq)
+uint32_t dz_finalize_qpos(size_t p, uint64_t eq)
 {
 	/* tzcntq is faster but avoid using it b/c it requires relatively newer archs */
 	uint64_t zcnt = (eq - 1) & (~eq & 0x5555);	/* subq, andnq, andq; chain length == 2 */
@@ -3317,7 +3317,7 @@ uint64_t dz_finalize_qpos(size_t p, uint64_t eq)
 }
 
 static __dz_vectorize
-uint64_t dz_calc_max_qpos_core(dz_query_t const *query, dz_state_t const *tail)
+uint32_t dz_calc_max_qpos_core(dz_query_t const *query, dz_state_t const *tail)
 {
 	dz_cap_t const *pcap = tail->max.cap;
 	if(pcap == NULL) { return(0); }
@@ -3392,6 +3392,8 @@ typedef struct dz_path_span_s {
 struct dz_alignment_s {
 	int32_t score;
 	uint32_t unused;
+
+	/* total alignment length on each sequence */
 	uint32_t ref_length, query_length;
 
 	/* path */
@@ -3795,9 +3797,9 @@ dz_alignment_t const *dz_trace_core(dz_arena_t *mem, dz_profile_t const *profile
 	/* no object is returned for root */
 	if(ff->max.cap == NULL) { return(NULL); }
 
-	/* detect pos */
-	uint64_t const idx = dz_calc_max_qpos_core(query, ff);	/* vector index, cell index */
-	debug("idx(%zu), root(%p)", (size_t)idx, profile->root);
+	/* get pos; uint32_t -> size_t promotion */
+	size_t const idx = dz_calc_max_qpos_core(query, ff);	/* vector index, cell index */
+	debug("idx(%zu), root(%p)", idx, profile->root);
 
 	/* init working buffer */
 	dz_trace_work_t w;
@@ -4262,9 +4264,9 @@ int64_t dz_calc_max_rpos(dz_t *self, dz_forefront_t const *ff)
 	dz_meta_t const meta = dz_extract_meta(tail);
 
 	/* calculate tail rpos, convert to signed */
-	int64_t rpos = dz_calc_max_rpos_core(meta.query, tail);
+	int32_t const rpos = dz_calc_max_rpos_core(meta.query, tail);
 
-	/* fold direction in */
+	/* fold direction in; int32_t -> int64_t promotion (sign expansion) */
 	return(meta.dir ? -rpos : rpos);	/* negate if reverse */
 }
 
