@@ -2471,7 +2471,7 @@ uint64_t dz_fetch_next(dz_fetch_work_t *f, dz_link_t *link)
 {
 	/* we expect this function call is inlined */
 	dz_fill_fetch_t next = f->fetcher.fetch_next(f->fetcher.opaque, f->matrix, f->query);
-	debug("fetched, rch(%c), is_term(%u)", next.rch, next.is_term);
+	debug("fetched, rch(%x), is_term(%u)", next.rch, next.is_term);
 	if(next.is_term) { return(1); }
 
 	/* FIXME: update adj?? */
@@ -3283,6 +3283,7 @@ void dz_destroy_profile(dz_destructor_t *dtor, dz_profile_t *profile)
  */
 typedef struct {
 	uint32_t rpos, qpos;
+	int32_t score, bonus;
 } dz_max_pos_t;
 
 static __dz_vectorize
@@ -3305,8 +3306,13 @@ uint32_t dz_calc_max_rpos_core(dz_query_t const *query, dz_state_t const *ff)
 	return(rpos);
 }
 
+typedef struct {
+	uint32_t qpos;
+	int32_t bonus;
+} dz_max_qpos_t;
+
 static __dz_vectorize
-uint32_t dz_finalize_qpos(size_t p, uint64_t eq)
+dz_max_qpos_t dz_finalize_qpos(dz_query_t const *query, size_t p, uint64_t eq, uint64_t is_tail)
 {
 	/* tzcntq is faster but avoid using it b/c it requires relatively newer archs */
 	uint64_t zcnt = (eq - 1) & (~eq & 0x5555);	/* subq, andnq, andq; chain length == 2 */
@@ -3314,14 +3320,24 @@ uint32_t dz_finalize_qpos(size_t p, uint64_t eq)
 	zcnt += zcnt>>4; zcnt &= 0x0f0f;
 	zcnt += zcnt>>8; zcnt &= 0x00ff;
 	debug("found, eq(%zx), zcnt(%zu), idx(%zu)", (size_t)eq, (size_t)zcnt, (size_t)(p * DZ_L + zcnt));
-	return(p * DZ_L + zcnt);
+
+	uint32_t const qpos = p * DZ_L + zcnt;
+	return((dz_max_qpos_t){
+		.qpos  = qpos,
+		.bonus = query->bonus[zcnt + (is_tail ? DZ_L : 0)]
+	});
 }
 
 static __dz_vectorize
-uint32_t dz_calc_max_qpos_core(dz_query_t const *query, dz_state_t const *tail)
+dz_max_qpos_t dz_calc_max_qpos_core(dz_query_t const *query, dz_state_t const *tail)
 {
+	dz_max_qpos_t const fail = {
+		.qpos  = 0,
+		.bonus = 0
+	};
+
 	dz_cap_t const *pcap = tail->max.cap;
-	if(pcap == NULL) { return(0); }
+	if(pcap == NULL) { return(fail); }
 
 	/* load max score */
 	__m128i const maxv = _mm_set1_epi16(tail->max.score.inc);	/* offset already included in tail->max.inc */
@@ -3333,21 +3349,22 @@ uint32_t dz_calc_max_qpos_core(dz_query_t const *query, dz_state_t const *tail)
 
 		/* adjust full-length bonus if needed */
 		#ifdef DZ_FULL_LENGTH_BONUS
-			__m128i const b = dz_query_get_bonus(query, p + 1 == query->blen);
+			uint64_t const is_tail = p + 1 == query->blen;
+			__m128i const b = dz_query_get_bonus(query, is_tail);
 			__m128i const s = _mm_add_epi16(v, b);
 		#else
-			dz_unused(query);
+			uint64_t const is_tail = 0;
 			__m128i const s = v;
 		#endif
 
 		print_vector(s);
 
-		uint64_t eq = _mm_movemask_epi8(_mm_cmpeq_epi16(s, maxv));
+		uint64_t const eq = _mm_movemask_epi8(_mm_cmpeq_epi16(s, maxv));
 		if(eq == 0) { continue; }
 		
-		return(dz_finalize_qpos(p, eq));
+		return(dz_finalize_qpos(query, p, eq, is_tail));
 	}
-	return(0);
+	return(fail);
 }
 
 static __dz_vectorize
@@ -3361,9 +3378,12 @@ dz_max_pos_t dz_calc_max_pos_core(dz_query_t const *query, dz_state_t const *tai
 	}
 
 	debug("tail(%p), pcap(%p)", tail, pcap);
+	dz_max_qpos_t const q = dz_calc_max_qpos_core(query, tail);
 	return((dz_max_pos_t){
-		.rpos = dz_calc_max_rpos_core(query, tail),
-		.qpos = dz_calc_max_qpos_core(query, tail)
+		.rpos  = dz_calc_max_rpos_core(query, tail),
+		.qpos  = q.qpos,
+		.bonus = q.bonus,
+		.score = dz_score_abs(&tail->max.score)
 	});
 }
 
@@ -3392,7 +3412,7 @@ typedef struct dz_path_span_s {
 /* typedef */
 struct dz_alignment_s {
 	int32_t score;
-	uint32_t unused;
+	int32_t bonus;
 
 	/* total alignment length on each sequence */
 	uint32_t ref_length, query_length;
@@ -3676,27 +3696,28 @@ uint64_t dz_trace_eat_del(dz_trace_work_t *w) {
 }
 
 static __dz_vectorize
-void dz_trace_init_aln(dz_alignment_t *aln, dz_state_t const *tail, size_t idx)
+void dz_trace_init_aln(dz_alignment_t *aln, dz_state_t const *tail, dz_max_qpos_t q)
 {
 	// aln->rrem  = dz_calc_max_rpos_core(tail);
 	aln->score = dz_score_abs(&tail->max.score);
-	aln->query_length = idx;
+	aln->bonus = q.bonus;
+	aln->query_length = q.qpos;
 
-	debug("tail(%p), idx(%zu)", tail, idx);
+	debug("tail(%p), idx(%zu)", tail, q.qpos);
 	debug("score(%d)", tail->max.score.abs);
 	return;
 }
 
 static __dz_vectorize
-void dz_trace_allocate_aln(dz_trace_work_t *w, dz_arena_t *mem, dz_state_t const *tail, size_t idx)
+void dz_trace_allocate_aln(dz_trace_work_t *w, dz_arena_t *mem, dz_state_t const *tail, dz_max_qpos_t q)
 {
 	/* allocate aln object */
 	size_t aln_size = (sizeof(dz_alignment_t)
 		+ (tail->cnt.section + 6) * sizeof(dz_path_span_t)
-		+ dz_roundup(tail->cnt.column + idx + 16, 8) * sizeof(uint8_t)	/* +1 for tail '\0' */
+		+ dz_roundup(tail->cnt.column + q.qpos + 16, 8) * sizeof(uint8_t)	/* +1 for tail '\0' */
 	);
 	w->aln = (dz_alignment_t *)dz_arena_malloc(mem, aln_size);
-	dz_trace_init_aln(w->aln, tail, idx);
+	dz_trace_init_aln(w->aln, tail, q);
 
 	/* slice section and path */
 	dz_path_span_t *span = (dz_path_span_t *)(w->aln + 1);
@@ -3704,8 +3725,8 @@ void dz_trace_allocate_aln(dz_trace_work_t *w, dz_arena_t *mem, dz_state_t const
 	w->span.base = span + tail->cnt.section + 4;
 
 	uint8_t *path = (uint8_t *)(w->span.base + 2);
-	w->path.ptr  = path + tail->cnt.column + idx;
-	w->path.base = path + tail->cnt.column + idx;
+	w->path.ptr  = path + tail->cnt.column + q.qpos;
+	w->path.base = path + tail->cnt.column + q.qpos;
 
 	/* push tail sentinels */
 	uint32_t const id = dz_extract_id(tail);
@@ -3716,7 +3737,7 @@ void dz_trace_allocate_aln(dz_trace_work_t *w, dz_arena_t *mem, dz_state_t const
 }
 
 static __dz_vectorize
-void dz_trace_init_work(dz_trace_work_t *w, dz_profile_t const *profile, dz_query_t const *query, dz_state_t const *tail, size_t idx)
+void dz_trace_init_work(dz_trace_work_t *w, dz_profile_t const *profile, dz_query_t const *query, dz_state_t const *tail, dz_max_qpos_t q)
 {
 	/* save lengths */
 	w->rlen    = 0;		/* is unknown before traceback */
@@ -3730,7 +3751,7 @@ void dz_trace_init_work(dz_trace_work_t *w, dz_profile_t const *profile, dz_quer
 	/* load max column pointers */
 	w->pcap = tail->max.cap;
 	w->ccap = NULL;
-	w->idx  = idx;
+	w->idx  = q.qpos;
 
 	/* compensate adj when save; make sure ccap == NULL */
 	w->score = dz_trace_score(DZ_S_MATRIX, w->pcap, w->idx);
@@ -3799,13 +3820,13 @@ dz_alignment_t const *dz_trace_core(dz_arena_t *mem, dz_profile_t const *profile
 	if(ff->max.cap == NULL) { return(NULL); }
 
 	/* get pos; uint32_t -> size_t promotion */
-	size_t const idx = dz_calc_max_qpos_core(query, ff);	/* vector index, cell index */
-	debug("idx(%zu), root(%p)", idx, profile->root);
+	dz_max_qpos_t const q = dz_calc_max_qpos_core(query, ff);	/* vector index, cell index */
+	debug("idx(%zu), root(%p)", (size_t)q.qpos, profile->root);
 
 	/* init working buffer */
 	dz_trace_work_t w;
-	dz_trace_init_work(&w, profile, query, ff, idx);
-	dz_trace_allocate_aln(&w, mem, ff, idx);
+	dz_trace_init_work(&w, profile, query, ff, q);
+	dz_trace_allocate_aln(&w, mem, ff, q);
 
 	/* core loop */
 	dz_trace_unwind_h(&w, DZ_S_MATRIX);
@@ -4278,7 +4299,8 @@ uint64_t dz_calc_max_qpos(dz_t *self, dz_forefront_t const *ff)
 
 	dz_state_t const *tail = dz_cstate(ff);
 	dz_meta_t const meta = dz_extract_meta(tail);
-	return(dz_calc_max_qpos_core(meta.query, tail));
+	dz_max_qpos_t const q = dz_calc_max_qpos_core(meta.query, tail);
+	return(q.qpos);
 }
 
 static __dz_vectorize
