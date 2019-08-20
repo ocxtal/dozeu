@@ -293,8 +293,8 @@ static uint8_t const *dz_query_packed_array(dz_query_t const *query);	/* query->
  * abstract sequence fetcher
  */
 typedef struct {
-	uint32_t is_term;
 	uint32_t rch;
+	uint32_t is_term;
 } dz_fill_fetch_t;
 
 /* exact banding for realigner */
