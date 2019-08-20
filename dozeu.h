@@ -2646,7 +2646,8 @@ __m128i dz_update_tail(dz_update_work_t *u, dz_cvec_t const *v)
 {
 	/* nothing to do in offset DP */
 	u->f = _mm_subs_epu16(u->f, v->iev8);
-	u->s = _mm_subs_epu16(u->s, v->iev8);
+	u->s = u->f;
+	// u->s = _mm_subs_epu16(u->s, v->iev8);
 
 	print_vector(u->s);
 	return(u->s);
