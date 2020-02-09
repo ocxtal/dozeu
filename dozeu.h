@@ -42,7 +42,15 @@ extern "C" {
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+
+/* _MM_FROUND_CUR_DIRECTION is defined in smmintrin.h (the include
+   file for SSE4.1), so if it's already defined we assume that the
+   SSE4.1 API is available and we can skip including <smmintrin.h>.
+   This allows Dozeu to use alternative implementations (e.g.,
+   <https://github.com/nemequ/simde>) without depending on them. */
+#if !defined(_MM_FROUND_CUR_DIRECTION)
 #include <smmintrin.h>
+#endif
 
 #ifndef DZ_CIGAR_OP
 #  define DZ_CIGAR_OP				0x04030201
