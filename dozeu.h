@@ -44,7 +44,7 @@ extern "C" {
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
-#include <x86intrin.h>
+#include <smmintrin.h>
 
 #ifndef DZ_INCLUDE_ONCE
 
