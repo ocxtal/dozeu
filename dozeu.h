@@ -219,7 +219,12 @@ struct dz_stack_s { struct dz_mem_block_s *curr; uint8_t *top, *end; uint64_t _p
 struct dz_mem_s { struct dz_mem_block_s blk; struct dz_stack_s stack; };
 #define dz_mem_stack_rem(_mem)		( (size_t)((_mem)->stack.end - (_mem)->stack.top) )
 
-struct dz_s { int8_t matrix[32]; uint16_t giv[8], gev[8], xt, bonus, max_gap_len, _pad[9]; struct dz_forefront_s const *root; int8_t protein_matrix[]; };
+struct dz_s {
+    int8_t matrix[32];
+    uint16_t giv[8], gev[8], riv[8], rev[8], xt, bonus, _pad[6]; // padding ensures memory alignment
+    //struct dz_forefront_s const *root;
+    int8_t protein_matrix[];
+};
 dz_static_assert(sizeof(struct dz_s) % sizeof(__m128i) == 0);
 #define dz_mem(_self)				( (struct dz_mem_s *)(_self) - 1 )
 
@@ -301,7 +306,7 @@ static __dz_force_inline
 struct dz_mem_s *dz_mem_init(
 	size_t size)
 {
-	size = dz_min2(DZ_MEM_INIT_SIZE, sizeof(struct dz_mem_s) + dz_roundup(size, DZ_MEM_ALIGN_SIZE));
+	size = dz_max2(DZ_MEM_INIT_SIZE, sizeof(struct dz_mem_s) + dz_roundup(size, DZ_MEM_ALIGN_SIZE));
 	struct dz_mem_s *mem = (struct dz_mem_s *)dz_malloc(size);
 	if(mem == NULL) {
 		debug("failed to malloc memory");
@@ -361,6 +366,7 @@ void *dz_mem_malloc(
 	struct dz_mem_s *mem,
 	size_t size)
 {
+    // TODO: this doesn't seem to check to make sure the size allocated is big enough...
 	if(dz_mem_stack_rem(mem) < 4096) { dz_mem_add_stack(mem, 0); }
 	void *ptr = (void *)mem->stack.top;
 	mem->stack.top += dz_roundup(size, sizeof(__m128i));
@@ -552,7 +558,7 @@ struct dz_s *dz_init_intl(
 	int8_t const *score_matrix,		/* match award in positive, mismatch penalty in negative. s(A,A) at [0], s(A,C) at [1], ... s(T,T) at [15] where s(ref_base, query_base) is a score function */
 	uint16_t gap_open,				/* gap penalties in positive */
 	uint16_t gap_extend,
-	uint64_t max_gap_len,			/* as X-drop threshold */
+	//uint64_t max_gap_len,			/* as X-drop threshold */
 	uint16_t full_length_bonus)		/* end-to-end mapping bonus; only activated when compiled with -DDZ_FULL_LENGTH_BONUS */
 {
 	size_t const L = sizeof(__m128i) / sizeof(uint16_t), gi = gap_open, ge = gap_extend;
@@ -595,31 +601,48 @@ struct dz_s *dz_init_intl(
 	_mm_store_si128((__m128i *)self->gev, gev);
 	self->xt = gi + ge * max_gap_len;			/* X-drop threshold */
 	self->bonus = full_length_bonus;
-	self->max_gap_len = max_gap_len;			/* save raw value */
-	debug("gi(%u), ge(%u), xdrop_threshold(%u), full_length_bonus(%u), max_gap_len(%lu)", gi, ge, self->xt, self->bonus, self->max_gap_len);
+	//self->max_gap_len = max_gap_len;			/* save raw value */
+	debug("gi(%u), ge(%u), xdrop_threshold(%u), full_length_bonus(%u)", gi, ge, self->xt, self->bonus);
 
 	/* create root head */
 	struct dz_cap_s *cap = (struct dz_cap_s *)dz_mem_malloc(mem, sizeof(struct dz_cap_s));
 	_mm_store_si128((__m128i *)cap, _mm_setzero_si128());
-
-	/* calc vector length; query = NULL for the first (root) column */
-	max_gap_len = dz_roundup(max_gap_len, L);
-	struct dz_forefront_s w = { { 0, (uint32_t)(max_gap_len / L) }, 0, 0, 0, 0, 0, 0, NULL, NULL };
-	struct dz_forefront_s *a = &w;
-
-	/* malloc the first column */
-	struct dz_swgv_s *dp = _begin_column_head(0, max_gap_len / L, 0, &a, 0);
-
-	/* fill the root (the leftmost) column; first init vectors */
-	__m128i s = _mm_setr_epi16(0, -(gi+ge), -(gi+2*ge), -(gi+3*ge), -(gi+4*ge), -(gi+5*ge), -(gi+6*ge), -(gi+7*ge));
+    
+    /* initialize and memoize the vectors we need to compute the root */
+	__m128i riv = _mm_setr_epi16(0, -(gi+ge), -(gi+2*ge), -(gi+3*ge), -(gi+4*ge), -(gi+5*ge), -(gi+6*ge), -(gi+7*ge));
+    _mm_store_si128((__m128i *)this->riv, riv);
+    __m128i rev = _mm_setr_epi16(-gi, -(gi+ge), -(gi+2*ge), -(gi+3*ge), -(gi+4*ge), -(gi+5*ge), -(gi+6*ge), -(gi+7*ge));
+    _mm_store_si128((__m128i *) this->rev, rev);
+    
+    // TODO: moving this part down to dz_root
+    
+    /* fill the root (the leftmost) column; first init vectors */
+    
+    /* calc vector length; query = NULL for the first (root) column */
+    max_gap_len = dz_roundup(max_gap_len, L);
+    
+    struct dz_forefront_s w = { { 0, (uint32_t)(max_gap_len / L) }, 0, 0, 0, 0, 0, 0, NULL, NULL };
+    struct dz_forefront_s *a = &w;
+    
+    /* malloc the first column */
+    struct dz_swgv_s *dp = _begin_column_head(0, max_gap_len / L, 0, &a, 0);
+    
+    /* e, f, and s needed for _store_vector */
 	__m128i const e = _mm_set1_epi16(DZ_CELL_MIN), xtv = _mm_set1_epi16(-self->xt);
 
 	/* until the X-drop test fails on all the cells in a vector */
+    __m128i s = self->riv;
 	for(size_t p = 0; p < max_gap_len / L; p++) {
 		__m128i const f = s;
-		if(dz_unlikely(_test_xdrop(s, xtv))) { debug("p(%lu)", p); w.r.epos = p; break; }
+		if (dz_unlikely(_test_xdrop(s, xtv))) {
+            debug("p(%lu)", p);
+            w.r.epos = p;
+            break;
+        }
 		_store_vector(&dp[p]);
-		if(p == 0) { s = _mm_setr_epi16(-gi, -(gi+ge), -(gi+2*ge), -(gi+3*ge), -(gi+4*ge), -(gi+5*ge), -(gi+6*ge), -(gi+7*ge)); }
+		if (p == 0) {
+            s = self->rev;
+        }
 		s = _mm_subs_epi16(s, _mm_slli_epi16(gev, 3));
 	}
 
@@ -1125,7 +1148,7 @@ struct dz_forefront_s const *dz_extend_intl(
 	__m128i const gev4 = _mm_slli_epi16(gev1, 2);
 	__m128i const gev8 = _mm_slli_epi16(gev1, 3);
 
-	struct dz_forefront_s w = { { UINT32_MAX, 0 }, 0, 0, 0, 0, 0, 0, NULL, NULL };	/* uint32_t spos, epos, max, inc; struct dz_query_s const *query; struct dz_cap_s const *cap; */ \
+	struct dz_forefront_s w = { { UINT32_MAX, 0 }, 0, 0, 0, 0, 0, 0, NULL, NULL };	/* uint32_t spos, epos, max, inc; struct dz_query_s const *query; struct dz_cap_s const *cap; */
 	w.rlen = rlen;
 	w.rid = rid;
 	w.query = query;
