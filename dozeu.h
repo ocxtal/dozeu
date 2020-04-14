@@ -186,6 +186,11 @@ struct dz_forefront_s {
 	struct dz_query_s const *query;
 	struct dz_cap_s const *mcap;
 };
+struct dz_alignment_init_s {
+    struct dz_forefront_s const *root;
+    uint16_t xt;
+};
+                     
 dz_static_assert(sizeof(struct dz_swgv_s) % sizeof(__m128i) == 0);
 dz_static_assert(sizeof(struct dz_cap_s) % sizeof(__m128i) == 0);
 dz_static_assert(sizeof(struct dz_forefront_s) % sizeof(__m128i) == 0);
@@ -221,14 +226,13 @@ struct dz_mem_s { struct dz_mem_block_s blk; struct dz_stack_s stack; };
 
 struct dz_s {
     int8_t matrix[32];
-    uint16_t giv[8], gev[8], riv[8], rev[8], xt, bonus, _pad[6]; // padding ensures memory alignment
-    //struct dz_forefront_s const *root;
+    uint16_t giv[8], gev[8], riv[8], rev[8], bonus, _pad[7]; // padding ensures memory alignment
     int8_t protein_matrix[];
 };
 dz_static_assert(sizeof(struct dz_s) % sizeof(__m128i) == 0);
 #define dz_mem(_self)				( (struct dz_mem_s *)(_self) - 1 )
 
-#define dz_root(_self)				( (struct dz_forefront_s const **)(&_self->root) )
+//#define dz_root(_self)				( (struct dz_forefront_s const **)(&_self->root) )
 #define dz_is_terminated(_ff)		( dz_cff(_ff)->r.spos >= dz_cff(_ff)->r.epos )
 #define dz_gt(_ff)					( dz_cff(_ff)->inc > 0 )
 #define dz_geq(_ff)					( dz_cff(_ff)->mcap != NULL )
@@ -299,7 +303,9 @@ void dz_mem_flush(
 {
 	mem->stack.curr = &mem->blk;
 	mem->stack.top = (uint8_t *)dz_roundup((uintptr_t)(mem + 1), DZ_MEM_ALIGN_SIZE);
-	mem->stack.end = (uint8_t *)mem + mem->blk.size - DZ_MEM_MARGIN_SIZE;
+    // TODO: i think this margin is redundant, since dz_malloc adds the margin past the end
+    // of the requested size
+    mem->stack.end = (uint8_t *)mem + mem->blk.size;// - DZ_MEM_MARGIN_SIZE;
 	return;
 }
 static __dz_force_inline
@@ -338,7 +344,18 @@ uint64_t dz_mem_add_stack(
 	size_t size)
 {
 	debug("add_stack, ptr(%p)", mem->stack.curr->next);
-	if(mem->stack.curr->next == NULL) {
+	if(mem->stack.curr->next == NULL
+       || dz_unlikely(mem->stack.curr->next->size < size + dz_roundup(sizeof(struct dz_mem_block_s), DZ_MEM_ALIGN_SIZE))) {
+        if (mem->stack.curr->next != NULL) {
+            /* didn't allocate enough memory earlier, throw out all subsequent blocks so we can start again bigger */
+            struct dz_mem_block_s *blk = mem->stack.curr->next;
+            while (blk != NULL) {
+                struct dz_mem_block_s *next = blk->next;
+                dz_free(blk);
+                blk = next;
+            }
+            mem->stack.curr->next = NULL;
+        }
 		/* current stack is the forefront of the memory block chain, add new block */
 		size = dz_max2(
 			size + dz_roundup(sizeof(struct dz_mem_block_s), DZ_MEM_ALIGN_SIZE),
@@ -367,7 +384,10 @@ void *dz_mem_malloc(
 	size_t size)
 {
     // TODO: this doesn't seem to check to make sure the size allocated is big enough...
-	if(dz_mem_stack_rem(mem) < 4096) { dz_mem_add_stack(mem, 0); }
+    // also, where does 4096 come from?
+    // also, don't we need to provide the size to ensure that a large enough block is allocated?
+	//if(dz_mem_stack_rem(mem) < 4096) { dz_mem_add_stack(mem, 0); }
+    if(dz_mem_stack_rem(mem) < size) { dz_mem_add_stack(mem, size); }
 	void *ptr = (void *)mem->stack.top;
 	mem->stack.top += dz_roundup(size, sizeof(__m128i));
 	return(ptr);
@@ -412,8 +432,8 @@ unittest() {
 #define _begin_column_head(_spos, _epos, _adj, _forefronts, _n_forefronts) ({ \
 	/* calculate sizes */ \
 	size_t next_req = _calc_next_size(_spos, _epos, _n_forefronts); \
-	/* allocate from heap */ \
-	if(dz_mem_stack_rem(dz_mem(self)) < next_req) { dz_mem_add_stack(dz_mem(self), 0); } \
+	/* allocate from heap TODO: shouldn't we make sure we get enough allocation?  */  \
+    if(dz_mem_stack_rem(dz_mem(self)) < next_req) { dz_mem_add_stack(dz_mem(self), next_req); } /* 0); }*/ \
 	/* push head-cap */ \
 	struct dz_cap_s *cap = _init_cap(_adj, 0xff, _forefronts, _n_forefronts); \
 	/* return array pointer */ \
@@ -428,7 +448,8 @@ unittest() {
 	cap->rch = (_rch);							/* record rch for the next column */ \
 	cap->rrem = (_rlen);						/* record rlen for use in traceback */ \
 	if(dz_likely(dz_mem_stack_rem(dz_mem(self)) < next_req)) { \
-		dz_mem_add_stack(dz_mem(self), 0); \
+        /* TODO: editing to make sure we ask for enough memory */ \
+		dz_mem_add_stack(dz_mem(self), next_req); /* 0); }*/ \
 		cap = _init_cap(0, _rch, &cap, 1); \
 	} \
 	debug("create column(%p), [%u, %u), span(%u), rrem(%ld), max(%d), inc(%d)", cap, (_w).r.spos, (_w).r.epos, (_w).r.epos - (_w).r.spos, (_rlen), (_w).max, (_w).inc); \
@@ -561,7 +582,6 @@ struct dz_s *dz_init_intl(
 	//uint64_t max_gap_len,			/* as X-drop threshold */
 	uint16_t full_length_bonus)		/* end-to-end mapping bonus; only activated when compiled with -DDZ_FULL_LENGTH_BONUS */
 {
-	size_t const L = sizeof(__m128i) / sizeof(uint16_t), gi = gap_open, ge = gap_extend;
 	/*
 	static uint8_t const transpose[16] __attribute__(( aligned(16) )) = {
 		0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15
@@ -595,62 +615,97 @@ struct dz_s *dz_init_intl(
 		}
 	#endif
 
-	__m128i const giv = _mm_set1_epi16(gi);
-	__m128i const gev = _mm_set1_epi16(ge);
+	__m128i const giv = _mm_set1_epi16(gap_open);
+	__m128i const gev = _mm_set1_epi16(gap_extend);
 	_mm_store_si128((__m128i *)self->giv, giv);
 	_mm_store_si128((__m128i *)self->gev, gev);
-	self->xt = gi + ge * max_gap_len;			/* X-drop threshold */
+    // TODO: see if i can remove this to cut down on state
+	//self->xt = 0;			/* X-drop threshold */
 	self->bonus = full_length_bonus;
 	//self->max_gap_len = max_gap_len;			/* save raw value */
-	debug("gi(%u), ge(%u), xdrop_threshold(%u), full_length_bonus(%u)", gi, ge, self->xt, self->bonus);
+	debug("gi(%u), ge(%u), full_length_bonus(%u)", gap_open, gap_extend, self->bonus);
 
-	/* create root head */
-	struct dz_cap_s *cap = (struct dz_cap_s *)dz_mem_malloc(mem, sizeof(struct dz_cap_s));
-	_mm_store_si128((__m128i *)cap, _mm_setzero_si128());
+    // TODO: i'm pretty sure this cap is extraneous and never used
+	///* create root head */
+	//struct dz_cap_s *cap = (struct dz_cap_s *)dz_mem_malloc(mem, sizeof(struct dz_cap_s));
+	//_mm_store_si128((__m128i *)cap, _mm_setzero_si128());
     
     /* initialize and memoize the vectors we need to compute the root */
-	__m128i riv = _mm_setr_epi16(0, -(gi+ge), -(gi+2*ge), -(gi+3*ge), -(gi+4*ge), -(gi+5*ge), -(gi+6*ge), -(gi+7*ge));
-    _mm_store_si128((__m128i *)this->riv, riv);
-    __m128i rev = _mm_setr_epi16(-gi, -(gi+ge), -(gi+2*ge), -(gi+3*ge), -(gi+4*ge), -(gi+5*ge), -(gi+6*ge), -(gi+7*ge));
-    _mm_store_si128((__m128i *) this->rev, rev);
+	__m128i riv = _mm_setr_epi16(
+        0,
+        -(gap_open+gap_extend),
+        -(gap_open+2*gap_extend),
+        -(gap_open+3*gap_extend),
+        -(gap_open+4*gap_extend),
+        -(gap_open+5*gap_extend),
+        -(gap_open+6*gap_extend),
+        -(gap_open+7*gap_extend)
+    );
+    _mm_store_si128((__m128i *)self->riv, riv);
+    __m128i rev = _mm_setr_epi16(
+        -gap_open,
+        -(gap_open+gap_extend),
+        -(gap_open+2*gap_extend),
+        -(gap_open+3*gap_extend),
+        -(gap_open+4*gap_extend),
+        -(gap_open+5*gap_extend),
+        -(gap_open+6*gap_extend),
+        -(gap_open+7*gap_extend)
+    );
+    _mm_store_si128((__m128i *)self->rev, rev);
     
-    // TODO: moving this part down to dz_root
+    // precompute the end-cap, which will always live next to the dz_s in this mem block
+    struct dz_cap_s *cap = _init_cap(0, 0xff, NULL, 0);
     
+	return(self);
+}
+static __dz_vectorize
+struct dz_alignment_init_s dz_align_init(
+     struct dz_s *self,
+     uint32_t max_gap_len)
+{
     /* fill the root (the leftmost) column; first init vectors */
     
-    /* calc vector length; query = NULL for the first (root) column */
-    max_gap_len = dz_roundup(max_gap_len, L);
+    /* calc vector length */
+    size_t const L = sizeof(__m128i) / sizeof(uint16_t);
+    size_t max_gap_vec_len = dz_roundup(max_gap_len, L) / L;
     
-    struct dz_forefront_s w = { { 0, (uint32_t)(max_gap_len / L) }, 0, 0, 0, 0, 0, 0, NULL, NULL };
+    struct dz_forefront_s w = { { 0, (uint32_t) max_gap_vec_len}, 0, 0, 0, 0, 0, 0, NULL, NULL };
     struct dz_forefront_s *a = &w;
     
     /* malloc the first column */
-    struct dz_swgv_s *dp = _begin_column_head(0, max_gap_len / L, 0, &a, 0);
+    struct dz_swgv_s *dp = _begin_column_head(0, max_gap_vec_len, 0, &a, 0);
+    
+    uint16_t xt = self->giv[0] + self->gev[0] * max_gap_len;
+    // calculate the x-drop threshold for this gap length
+    __m128i xtv = _mm_set1_epi16(-xt);
     
     /* e, f, and s needed for _store_vector */
-	__m128i const e = _mm_set1_epi16(DZ_CELL_MIN), xtv = _mm_set1_epi16(-self->xt);
-
-	/* until the X-drop test fails on all the cells in a vector */
-    __m128i s = self->riv;
-	for(size_t p = 0; p < max_gap_len / L; p++) {
-		__m128i const f = s;
-		if (dz_unlikely(_test_xdrop(s, xtv))) {
+    __m128i const e = _mm_set1_epi16(DZ_CELL_MIN);
+    /* until the X-drop test fails on all the cells in a vector */
+    __m128i s = _mm_load_si128((__m128i const *)self->riv);
+    for(size_t p = 0; p < max_gap_vec_len; p++) {
+        __m128i const f = s;
+        if (_test_xdrop(s, xtv)) {
             debug("p(%lu)", p);
             w.r.epos = p;
             break;
         }
-		_store_vector(&dp[p]);
-		if (p == 0) {
-            s = self->rev;
+        _store_vector(&dp[p]);
+        if (p == 0) {
+            s = _mm_load_si128((__m128i const *)self->rev);
         }
-		s = _mm_subs_epi16(s, _mm_slli_epi16(gev, 3));
-	}
-
-	/* done; create and return a forefront object */
-	_end_column(dp, w.r.spos, w.r.epos);
-	self->root = _end_matrix(dp, &w, 0);
-	debug("self(%p), mem(%p), root(%p)", self, dz_mem(self), self->root);
-	return(self);
+        s = _mm_subs_epi16(s, _mm_slli_epi16(_mm_load_si128((__m128i const *)self->gev), 3));
+    }
+    
+    /* done; create forefront object */
+    _end_column(dp, w.r.spos, w.r.epos);
+    
+    /* package forefront and xt, return */
+    dz_alignment_init_s aln_init;
+    aln_init.root = _end_matrix(dp, &w, 0);
+    aln_init.xt = xt;
+    return(aln_init);
 }
 
 #ifdef DZ_FULL_LENGTH_BONUS
@@ -659,20 +714,20 @@ struct dz_s *dz_init(
 	int8_t const *score_matrix,
 	uint16_t gap_open,
 	uint16_t gap_extend,
-	uint64_t max_gap_len,
+	//uint64_t max_gap_len,
 	uint16_t full_length_bonus)
 {
-	return(dz_init_intl(score_matrix, gap_open, gap_extend, max_gap_len, full_length_bonus));
+	return(dz_init_intl(score_matrix, gap_open, gap_extend, full_length_bonus));
 }
 #else
 static __dz_vectorize
 struct dz_s *dz_init(
 	int8_t const *score_matrix,
 	uint16_t gap_open,
-	uint16_t gap_extend,
-	uint64_t max_gap_len)
+	uint16_t gap_extend)//,
+	//uint64_t max_gap_len)
 {
-	return(dz_init_intl(score_matrix, gap_open, gap_extend, max_gap_len, 0));
+	return(dz_init_intl(score_matrix, gap_open, gap_extend, 0));
 }
 #endif
 
@@ -689,8 +744,10 @@ static __dz_vectorize
 void dz_flush(
 	struct dz_s *self)
 {
+    // point the mem back at the initial block
 	dz_mem_flush(dz_mem(self));
-	dz_mem(self)->stack.top = (uint8_t *)(self->root + 1);
+    // move stack pointers past the dz_s and the dz_cap_s that follows it
+	dz_mem(self)->stack.top = (uint8_t *)(((dz_cap_s*) (self + 1)) + 1);
 	return;
 }
 
@@ -787,15 +844,16 @@ static int8_t const dz_unittest_score_matrix[DZ_MAT_SIZE * DZ_MAT_SIZE] = {
 #endif
 
 #ifdef DZ_FULL_LENGTH_BONUS
-#define DZ_UNITTEST_SCORE_PARAMS	dz_unittest_score_matrix, 5, 1, 20, 0
+#define DZ_UNITTEST_SCORE_PARAMS	dz_unittest_score_matrix, 5, 1, 0
 #else
-#define DZ_UNITTEST_SCORE_PARAMS	dz_unittest_score_matrix, 5, 1, 20
+#define DZ_UNITTEST_SCORE_PARAMS	dz_unittest_score_matrix, 5, 1
 #endif
+#define DZ_UNITTEST_MAX_GAP_LEN 20
 
 unittest() {
 	struct dz_s *dz = dz_init(DZ_UNITTEST_SCORE_PARAMS);
 	ut_assert(dz != NULL);
-	ut_assert(dz->root != NULL);
+	//ut_assert(dz->root != NULL);
 	dz_destroy(dz);
 }
 
@@ -1072,13 +1130,13 @@ unittest() {
 	_end_column(cdp, w.r.spos, w.r.epos); \
 	cdp; \
 })
-#define _fill_column(w, pdp, query, rt, rrem, init_s) ({ \
+#define _fill_column(w, pdp, query, rt, rrem, xt, init_s) ({ \
 	/* load the base */ \
 	_init_rch(query, rt, rrem); \
 	struct dz_swgv_s *cdp = _begin_column(w, rch, rrem); \
 	/* init vectors */ \
 	__m128i f = minv, ps = _mm_set1_epi16(init_s), maxv = _mm_set1_epi16(INT16_MIN); \
-	__m128i const xtv = _mm_set1_epi16(w.inc - self->xt);	/* next offset == current max thus X-drop threshold is always -xt */ \
+	__m128i const xtv = _mm_set1_epi16(w.inc - xt);	/* next offset == current max thus X-drop threshold is always -xt */ \
 	/* until the bottommost vertically placed band... */ \
 	uint32_t sspos = w.r.spos;					/* save spos on the stack */ \
 	for(uint64_t p = w.r.spos; p < w.r.epos; p++) { \
@@ -1117,7 +1175,7 @@ struct dz_forefront_s const *dz_extend_intl(
 	struct dz_s *self,
 	struct dz_query_s const *query,
 	struct dz_forefront_s const **forefronts, size_t n_forefronts,
-	char const *ref, int32_t rlen, uint32_t rid,
+	char const *ref, int32_t rlen, uint32_t rid, uint16_t xt,
 	uint16_t init_s)
 {
 	size_t const L = sizeof(__m128i) / sizeof(uint16_t);
@@ -1162,7 +1220,7 @@ struct dz_forefront_s const *dz_extend_intl(
 	uint8_t const *rt = (uint8_t const *)&ref[rrem - (rlen < 0)];
 
 	while(rrem != 0 && w.r.spos < w.r.epos) {
-		pdp = _fill_column(w, pdp, query, rt, rrem, init_s); rrem += dir;
+		pdp = _fill_column(w, pdp, query, rt, rrem, xt, init_s); rrem += dir;
 		debug("rrem(%d), [%u, %u)", rrem, w.r.spos, w.r.epos);
 	}
 	return(_end_matrix(pdp, &w, rrem));					/* update max vector (pdp always points at the last vector) */
@@ -1180,19 +1238,19 @@ struct dz_forefront_s const *dz_extend(
 	struct dz_s *self,
 	struct dz_query_s const *query,
 	struct dz_forefront_s const **forefronts, size_t n_forefronts,
-	char const *ref, int32_t rlen, uint32_t rid)
+	char const *ref, int32_t rlen, uint32_t rid, uint16_t xt)
 {
-	return(dz_extend_intl(self, query, forefronts, n_forefronts, ref, rlen, rid, INT16_MIN));
+	return(dz_extend_intl(self, query, forefronts, n_forefronts, ref, rlen, rid, xt, INT16_MIN));
 }
 static __dz_vectorize
 struct dz_forefront_s const *dz_scan(
 	struct dz_s *self,
 	struct dz_query_s const *query,
 	struct dz_forefront_s const **forefronts, size_t n_forefronts,
-	char const *ref, int32_t rlen, uint32_t rid)
+	char const *ref, int32_t rlen, uint32_t rid, uint16_t xt)
 {
 	debug("dz_scan called");
-	return(dz_extend_intl(self, query, forefronts, n_forefronts, ref, rlen, rid, 0));
+	return(dz_extend_intl(self, query, forefronts, n_forefronts, ref, rlen, rid, xt, 0));
 }
 
 
@@ -1223,29 +1281,30 @@ unittest( "extend.base" ) {
 		struct dz_forefront_s const *forefront = NULL;
 
 		/* nothing occurs */
-		forefront = dz_extend(dz, q, NULL, 0, NULL, 0, 1);
+		forefront = dz_extend(dz, q, NULL, 0, NULL, 0, 1, 0);
 		ut_assert(forefront == NULL);
-		forefront = dz_extend(dz, q, NULL, 0, "", 0, 2);
+		forefront = dz_extend(dz, q, NULL, 0, "", 0, 2, 0);
 		ut_assert(forefront == NULL);
-		forefront = dz_extend(dz, q, dz_root(dz), 1, "", 0, 3);
-		ut_assert(forefront == *dz_root(dz));
+        dz_alignment_init_s aln_init = dz_align_init(dz, DZ_UNITTEST_MAX_GAP_LEN);
+		forefront = dz_extend(dz, q, &aln_init.root, 1, "", 0, 3, aln_init.xt);
+		ut_assert(forefront == aln_init.root);
 
 		/* extend */
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("A", "\x0", "M"), 1, 4);
+		forefront = dz_extend(dz, q, &aln_init.root, 1, dz_ut_sel("A", "\x0", "M"), 1, 4, aln_init.xt);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(2, 2, 5));
 
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AG", "\x0\x2", "MA"), 2, 5);
+		forefront = dz_extend(dz, q, &aln_init.root, 1, dz_ut_sel("AG", "\x0\x2", "MA"), 2, 5, aln_init.xt);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(4, 4, 9));
 		if(trial == 1) { continue; }
 
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTT", "\x0\x2\x0\x3\x3\x3\x3", "MASLVQT"), 7, 6);
+		forefront = dz_extend(dz, q, &aln_init.root, 1, dz_ut_sel("AGATTTT", "\x0\x2\x0\x3\x3\x3\x3", "MASLVQT"), 7, 6, aln_init.xt);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(9, 9, 28));
 		if(trial == 2) { continue; }
 
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTTC", "\x0\x2\x0\x3\x3\x3\x3\x1", "MASLVQTG"), 8, 7);
+		forefront = dz_extend(dz, q, &aln_init.root, 1, dz_ut_sel("AGATTTTC", "\x0\x2\x0\x3\x3\x3\x3\x1", "MASLVQTG"), 8, 7, aln_init.xt);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(11, 11, 34));
 
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTTCA", "\x0\x2\x0\x3\x3\x3\x3\x1\x0", "MASLVQTGK"), 9, 8);
+		forefront = dz_extend(dz, q, &aln_init.root, 1, dz_ut_sel("AGATTTTCA", "\x0\x2\x0\x3\x3\x3\x3\x1\x0", "MASLVQTGK"), 9, 8, aln_init.xt);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(13, 13, 39));
 
 		(void)forefront;
@@ -1278,35 +1337,36 @@ unittest( "extend.base.revcomp" ) {
 		struct dz_forefront_s const *forefront = NULL;
 
 		/* nothing occurs */
-		forefront = dz_extend(dz, q, NULL, 0, NULL, 0, 1);
+		forefront = dz_extend(dz, q, NULL, 0, NULL, 0, 1, 0);
 		ut_assert(forefront == NULL);
-		forefront = dz_extend(dz, q, NULL, 0, "", 0, 2);
+		forefront = dz_extend(dz, q, NULL, 0, "", 0, 2, 0);
 		ut_assert(forefront == NULL);
-		forefront = dz_extend(dz, q, dz_root(dz), 1, "", 0, 3);
-		ut_assert(forefront == *dz_root(dz));
+        dz_alignment_init_s aln_init = dz_align_init(dz, DZ_UNITTEST_MAX_GAP_LEN);
+		forefront = dz_extend(dz, q, &aln_init.root, 1, "", 0, 3, aln_init.xt);
+		ut_assert(forefront == aln_init.root);
 
 		/* extend */
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("A", "\x0", "M"), 1, 4);
+		forefront = dz_extend(dz, q, &aln_init.root, 1, dz_ut_sel("A", "\x0", "M"), 1, 4, aln_init.xt);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(2, 2, 5));
 
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AG", "\x0\x2", "MA"), 2, 5);
+		forefront = dz_extend(dz, q, &aln_init.root, 1, dz_ut_sel("AG", "\x0\x2", "MA"), 2, 5, aln_init.xt);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(4, 4, 9));
 		if(trial == 1) { continue; }
 
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTT", "\x0\x2\x0\x3\x3\x3\x3", "MASLVQT"), 7, 6);
+		forefront = dz_extend(dz, q, &aln_init.root, 1, dz_ut_sel("AGATTTT", "\x0\x2\x0\x3\x3\x3\x3", "MASLVQT"), 7, 6, aln_init.xt);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(9, 9, 28));
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel(&"AAAATCT"[7], &"\x0\x0\x0\x0\x3\x1\x3"[7], "MASLVQT"), -7, 6);
+		forefront = dz_extend(dz, q, &aln_init.root, 1, dz_ut_sel(&"AAAATCT"[7], &"\x0\x0\x0\x0\x3\x1\x3"[7], "MASLVQT"), -7, 6, aln_init.xt);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(9, 9, 28));
 		if(trial == 2) { continue; }
 
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTTC", "\x0\x2\x0\x3\x3\x3\x3\x1", "MASLVQTG"), 8, 7);
+		forefront = dz_extend(dz, q, &aln_init.root, 1, dz_ut_sel("AGATTTTC", "\x0\x2\x0\x3\x3\x3\x3\x1", "MASLVQTG"), 8, 7, aln_init.xt);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(11, 11, 34));
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel(&"GAAAATCT"[8], &"\x2\x0\x0\x0\x0\x3\x1\x3"[8], "MASLVQTG"), -8, 7);
+		forefront = dz_extend(dz, q, &aln_init.root, 1, dz_ut_sel(&"GAAAATCT"[8], &"\x2\x0\x0\x0\x0\x3\x1\x3"[8], "MASLVQTG"), -8, 7, aln_init.xt);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(11, 11, 28));
 
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AGATTTTCA", "\x0\x2\x0\x3\x3\x3\x3\x1\x0", "MASLVQTGK"), 9, 8);
+		forefront = dz_extend(dz, q, &aln_init.root, 1, dz_ut_sel("AGATTTTCA", "\x0\x2\x0\x3\x3\x3\x3\x1\x0", "MASLVQTGK"), 9, 8, aln_init.xt);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(13, 13, 39));
-		forefront = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel(&"TGAAAATCT"[9], &"\x3\x2\x0\x0\x0\x0\x3\x1\x3"[9], "MASLVQTGK"), -9, 8);
+		forefront = dz_extend(dz, q, &aln_init.root, 1, dz_ut_sel(&"TGAAAATCT"[9], &"\x3\x2\x0\x0\x0\x0\x3\x1\x3"[9], "MASLVQTGK"), -9, 8, aln_init.xt);
 		ut_assert(forefront != NULL && forefront->max == dz_ut_sel(13, 13, 28));
 
 		(void)forefront;
@@ -1334,14 +1394,15 @@ unittest( "extend.small" ) {
 		 *   \ /    \    /
 		 *    C      CATT
 		 */
-		forefronts[0] = dz_extend(dz, q, dz_root(dz), 1, dz_ut_sel("AG", "\x0\x2", "MA"), 2, 1);
+        dz_alignment_init_s aln_init = dz_align_init(dz, DZ_UNITTEST_MAX_GAP_LEN);
+		forefronts[0] = dz_extend(dz, q, &aln_init.root, 1, dz_ut_sel("AG", "\x0\x2", "MA"), 2, 1, aln_init.xt);
 		ut_assert(forefronts[0] != NULL && forefronts[0]->max == dz_ut_sel(4, 4, 9));
 
-		forefronts[1] = dz_extend(dz, q, &forefronts[0], 1, dz_ut_sel("C", "\x1", "T"), 1, 2);
+		forefronts[1] = dz_extend(dz, q, &forefronts[0], 1, dz_ut_sel("C", "\x1", "T"), 1, 2, aln_init.xt);
 		ut_assert(forefronts[1] != NULL && forefronts[1]->max == dz_ut_sel(6, 6, 14));
 		if(trial == 1) { continue; }
 
-		forefronts[2] = dz_extend(dz, q, &forefronts[0], 2, dz_ut_sel("TTTT", "\x3\x3\x3\x3", "LVQT"), 4, 3);
+		forefronts[2] = dz_extend(dz, q, &forefronts[0], 2, dz_ut_sel("TTTT", "\x3\x3\x3\x3", "LVQT"), 4, 3, aln_init.xt);
 		if(trial == 2) {
 			ut_assert(forefronts[2] != NULL && forefronts[2]->max == dz_ut_sel(8, 8, 18));
 			continue;
@@ -1349,10 +1410,10 @@ unittest( "extend.small" ) {
 		ut_assert(forefronts[2] != NULL && forefronts[2]->max == dz_ut_sel(14, 14, 32));
 		if(trial == 3) { continue; }
 
-		forefronts[3] = dz_extend(dz, q, &forefronts[2], 1, dz_ut_sel("CATT", "\x1\x0\x3\x3", "CKAK"), 4, 4);
+		forefronts[3] = dz_extend(dz, q, &forefronts[2], 1, dz_ut_sel("CATT", "\x1\x0\x3\x3", "CKAK"), 4, 4, aln_init.xt);
 		ut_assert(forefronts[3] != NULL && forefronts[3]->max == dz_ut_sel(22, 22, 43));
 
-		forefronts[4] = dz_extend(dz, q, &forefronts[2], 2, dz_ut_sel("CTGA", "\x1\x3\x2\x0", "QLTL"), 4, 5);
+		forefronts[4] = dz_extend(dz, q, &forefronts[2], 2, dz_ut_sel("CTGA", "\x1\x3\x2\x0", "QLTL"), 4, 5, aln_init.xt);
 		ut_assert(forefronts[4] != NULL && forefronts[4]->max == dz_ut_sel(30, 30, 61));
 	}
 	dz_destroy(dz);
@@ -1586,13 +1647,14 @@ unittest( "trace" ) {
 	struct dz_forefront_s const *forefront = NULL;
 	struct dz_alignment_s *aln = NULL;
 
-	forefront = dz_extend(dz, q, dz_root(dz), 1, "A", 1, 1);
+    dz_alignment_init_s aln_init = dz_align_init(dz, DZ_UNITTEST_MAX_GAP_LEN);
+	forefront = dz_extend(dz, q, &aln_init.root, 1, "A", 1, 1, aln_init.xt);
 	aln = dz_trace(dz, forefront);
 
-	forefront = dz_extend(dz, q, &forefront, 1, "GC", 2, 2);
+	forefront = dz_extend(dz, q, &forefront, 1, "GC", 2, 2, aln_init.xt);
 	aln = dz_trace(dz, forefront);
 
-	forefront = dz_extend(dz, q, &forefront, 1, "TTTT", 4, 3);
+	forefront = dz_extend(dz, q, &forefront, 1, "TTTT", 4, 3, aln_init.xt);
 	aln = dz_trace(dz, forefront);
 
 	(void)aln;
