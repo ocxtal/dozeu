@@ -44,6 +44,11 @@ extern "C" {
 #include <string.h>
 #include <x86intrin.h>
 
+#ifndef DZ_INCLUDE_ONCE
+
+#define DZ_NUM_QUAL_SCORES 64
+#define DZ_QUAL_MATRIX_SIZE (16 * DZ_NUM_QUAL_SCORES)
+
 #ifndef DZ_CIGAR_OP
 #  define DZ_CIGAR_OP				0x04030201
 #endif
@@ -157,9 +162,14 @@ unittest() { debug("hello"); }
 #define DZ_CELL_MARGIN				( 32 )
 #define DZ_CELL_MARGINED_MIN		( DZ_CELL_MIN + DZ_CELL_MARGIN )
 #define DZ_CELL_MARGINED_MAX		( DZ_CELL_MAX - DZ_CELL_MARGIN )
-
+                     
 /* query; preconverted query sequence; blen = roundup(qlen, L) / L; array must have 16-byte-length margin at the tail */
-struct dz_query_s { uint64_t blen; char const *q; int16_t bonus[2 * sizeof(__m128i) / sizeof(int16_t)]; uint8_t arr[]; };
+struct dz_query_s {
+    uint64_t blen;
+    char const *q;
+    int16_t bonus[2 * sizeof(__m128i) / sizeof(int16_t)];
+    uint8_t arr[];
+};
 dz_static_assert(sizeof(struct dz_query_s) % sizeof(__m128i) == 0);
 
 /* node (reference) */
@@ -496,6 +506,9 @@ unittest() {
 #define _init_bonus(_query)			;
 #define _add_bonus(_i, _v)			( (_v) )
 #endif
+                     
+#endif // DZ_INCLUDE_ONCE
+// TODO: qual: somewhere in here is the score accessing method
 
 #if defined(DZ_NUCL_ASCII)
 #define _init_rch(_query, _rt, _rrem) \
@@ -575,8 +588,15 @@ unittest() {
  * @fn dz_init, dz_destroy
  */
 static __dz_vectorize
+#ifdef DZ_QUAL_ADJ
+struct dz_s *dz_qual_adj_init_intl(
+#else
 struct dz_s *dz_init_intl(
+#endif
 	int8_t const *score_matrix,		/* match award in positive, mismatch penalty in negative. s(A,A) at [0], s(A,C) at [1], ... s(T,T) at [15] where s(ref_base, query_base) is a score function */
+#ifdef DZ_QUAL_ADJ
+    int8_t const *qual_adj_score_matrix, /* series of DZ_NUM_QUAL_SCORES adjusted score matrices for each phred base qual (no offset) */
+#endiff
 	uint16_t gap_open,				/* gap penalties in positive */
 	uint16_t gap_extend,
 	//uint64_t max_gap_len,			/* as X-drop threshold */
@@ -593,13 +613,27 @@ struct dz_s *dz_init_intl(
 		debug("failed to malloc memory");
 		return(NULL);
 	}
+    // TODO: what is the point of the latter 16 bytes all being zero?
 	#if defined(DZ_NUCL_ASCII) || defined(DZ_NUCL_2BIT)
-		struct dz_s *self = (struct dz_s *)dz_mem_malloc(mem, sizeof(struct dz_s));
+        /* allocate with or without space afterwards for the quality adjusted matrices */
+        #ifdef DZ_QUAL_ADJ
+            struct dz_s *self = (struct dz_s *)dz_mem_malloc(mem, sizeof(struct dz_s) + DZ_QUAL_MATRIX_SIZE);
+        #else
+            struct dz_s *self = (struct dz_s *)dz_mem_malloc(mem, sizeof(struct dz_s));
+        #endif
 
 		/* constants */
 		__m128i const tmat = _mm_loadu_si128((__m128i const *)score_matrix);
 		_mm_store_si128((__m128i *)&self->matrix[0], tmat);
 		_mm_store_si128((__m128i *)&self->matrix[16], _mm_setzero_si128());
+    
+        #ifdef DZ_QUAL_ADJ
+            /* load the quality adjusted matrices immediately after the dz_s */
+            __m128i *qual_adj_mats = (__m128i *) (self + 1);
+            for(uint64_t i = 0; i < DZ_NUM_QUAL_SCORES; ++i) {
+                _mm_store_si128(qual_adj_mats + i, _mm_loadu_si128(((__m128i const *)qual_adj_score_matrix) + i));
+            }
+        #endif
 	#else
 		struct dz_s *self = (struct dz_s *)dz_mem_malloc(mem, sizeof(struct dz_s) + DZ_MAT_SIZE * DZ_MAT_SIZE + 2 * sizeof(__m128i));
 
@@ -741,13 +775,24 @@ void dz_destroy(
 	return;
 }
 static __dz_vectorize
+#ifdef DZ_QUAL_ADJ
+dz_qual_adj_flush(
+#else
 void dz_flush(
+#endif
 	struct dz_s *self)
 {
     // point the mem back at the initial block
 	dz_mem_flush(dz_mem(self));
-    // move stack pointers past the dz_s and the dz_cap_s that follows it
-	dz_mem(self)->stack.top = (uint8_t *)(((dz_cap_s*) (self + 1)) + 1);
+    
+    // move stack pointers past the dz_s, maybe the qual matrices, and the dz_cap_s that follows8
+    void *bottom = (void *) (self + 1);
+    #ifdef DZ_QUAL_ADJ
+        bottom = (void *) (((int8_t const *) bottom) + DZ_QUAL_MATRIX_SIZE);
+    #endif
+    bottom = (void *) (((dz_cap_s *) bottom) + 1);
+    
+	dz_mem(self)->stack.top = bottom;
 	return;
 }
 
@@ -869,7 +914,13 @@ struct dz_query_s *dz_pack_query_forward(
 	char const *query, size_t qlen)
 {
 	size_t const L = sizeof(__m128i) / sizeof(uint16_t);
-	struct dz_query_s *q = (struct dz_query_s *)dz_mem_malloc(dz_mem(self), sizeof(struct dz_query_s) + dz_roundup(qlen + 1, L) + sizeof(__m128i));
+    // TODO: qual: make sure I'm doing this right
+    size_t pack_size = dz_roundup(qlen + 1, L) + sizeof(__m128i);
+    #ifdef DZ_QUAL_ADJ
+        struct dz_query_s *q = (struct dz_query_s *)dz_mem_malloc(dz_mem(self), sizeof(struct dz_query_s) + 2 * pack_size);
+    #else
+        struct dz_query_s *q = (struct dz_query_s *)dz_mem_malloc(dz_mem(self), sizeof(struct dz_query_s) + pack_size);
+    #endif
 	*q = (struct dz_query_s){
 		.blen = qlen == 0 ? 0 : (dz_roundup(qlen + 1, L) / L),
 		.q = query,
@@ -901,7 +952,8 @@ struct dz_query_s *dz_pack_query_forward(
 	for(size_t i = 0; i < dz_rounddown(qlen, sizeof(__m128i)); i += sizeof(__m128i)) {
 		__m128i const qv = _mm_loadu_si128((__m128i const *)&query[i]);
 		__m128i tv = _mm_shuffle_epi8(cv, _mm_and_si128(qv, fv));
-		_mm_store_si128((__m128i *)&q->arr[i], _mm_alignr_epi8(tv, pv, 15)); pv = tv;			/* shift by one to make room for a base */
+		_mm_store_si128((__m128i *)&q->arr[i], _mm_alignr_epi8(tv, pv, 15)); /* shift by one to make room for a base */
+        pv = tv;
 	}
 
 	/* continue the same conversion on the remainings */
@@ -910,9 +962,15 @@ struct dz_query_s *dz_pack_query_forward(
 	for(size_t i = dz_rounddown(qlen, sizeof(__m128i)); i < qlen; i++) {
 		q->arr[i + 1] = conv[(uint8_t)query[i] & 0x0f];
 	}
+    // TODO: does he need the + 1 here? maybe that's why he is buffering the extra sizeof(__m128i) in the alloc?
 	for(size_t i = qlen; i < dz_roundup(qlen + 1, sizeof(__m128i)); i++) {
 		q->arr[i + 1] = qS;
 	}
+    
+    // TODO: qual: finish this fwd
+    #ifdef DZ_QUAL_ADJ
+        
+    #endif
 
 	debug("qlen(%lu), q(%.*s)", qlen, (int)qlen, query);
 	return(q);
@@ -923,7 +981,13 @@ struct dz_query_s *dz_pack_query_reverse(
 	char const *query, size_t qlen)
 {
 	size_t const L = sizeof(__m128i) / sizeof(uint16_t);
-	struct dz_query_s *q = (struct dz_query_s *)dz_mem_malloc(dz_mem(self), sizeof(struct dz_query_s) + dz_roundup(qlen + 1, L) + sizeof(__m128i));
+    // TODO: qual: make sure I'm doing this right
+    size_t pack_size = dz_roundup(qlen + 1, L) + sizeof(__m128i);
+    #ifdef DZ_QUAL_ADJ
+        struct dz_query_s *q = (struct dz_query_s *)dz_mem_malloc(dz_mem(self), sizeof(struct dz_query_s) + 2 * pack_size);
+    #else
+        struct dz_query_s *q = (struct dz_query_s *)dz_mem_malloc(dz_mem(self), sizeof(struct dz_query_s) + pack_size);
+    #endif
 	*q = (struct dz_query_s){
 		.blen = qlen == 0 ? 0 : (dz_roundup(qlen + 1, L) / L),
 		.q = query,
@@ -960,6 +1024,11 @@ struct dz_query_s *dz_pack_query_reverse(
 	for(size_t i = qlen; i < dz_roundup(qlen + 1, sizeof(__m128i)); i++) {
 		q->arr[i + 1] = qS;
 	}
+    
+    // TODO: qual: finish this rev
+    #ifdef DZ_QUAL_ADJ
+        
+    #endif
 
 	debug("qlen(%lu), q(%.*s)", qlen, (int)qlen, query);
 	return(q);
@@ -1665,6 +1734,7 @@ unittest( "trace" ) {
 };	/* extern "C" { */
 #endif
 
+#define DZ_INCLUDE_ONCE
 /**
  * end of dozeu.h
  */
