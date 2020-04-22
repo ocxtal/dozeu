@@ -306,6 +306,11 @@ void dz_free(
 	free((void *)((uint8_t *)ptr - DZ_MEM_MARGIN_SIZE));
 	return;
 }
+                     
+#endif // DZ_INCLUDE_ONCE
+                     
+                     
+#if !defined(DZ_UNITTESTS_INCLUDED) && !defined(DZ_QUAL_ADJ)
 
 unittest() {
 	size_t size[] = { 10, 100, 1000, 10000, 100000, 1000000, 10000000 };
@@ -318,7 +323,11 @@ unittest() {
 		dz_free(p);
 	}
 }
+                     
+#endif
 
+#ifndef DZ_INCLUDE_ONCE
+                     
 /**
  * @fn dz_mem_init, dz_mem_destroy, dz_mem_add_stack, dz_mem_malloc, dz_mem_flush
  * @brief stack chain
@@ -418,7 +427,11 @@ void *dz_mem_malloc(
 	mem->stack.top += dz_roundup(size, sizeof(__m128i));
 	return(ptr);
 }
+                     
+#endif // DZ_INCLUDE_ONCE
 
+#if !defined(DZ_UNITTESTS_INCLUDED) && !defined(DZ_QUAL_ADJ)
+                     
 unittest() {
 	size_t size[] = { 10, 100, 1000, 10000, 100000, 1000000, 10000000 };
 	for(size_t i = 0; i < sizeof(size) / sizeof(size_t); i++) {
@@ -430,7 +443,7 @@ unittest() {
 	}
 }
                      
-#endif // DZ_INCLUDE_ONCE
+#endif
 
 /**
  * vector update macros
@@ -540,18 +553,16 @@ unittest() {
     __m128i iv = _mm_or_si128(_mm_slli_epi16(_mm_cvtepi8_epi16(_mm_loadl_epi64((__m128i const *)&qarr[(_i) * L])), 5), \
                               _mm_cvtepi8_epi16(_mm_and_si128(_mm_or_si128(rv, _mm_loadl_epi64((__m128i const *)&parr[(_i) * L])), _mm_set1_epi8(0x1f)))); \
     /* get the scores from the quality matrices (unvectorized, unfortunately) */ \
-    int8_t const *qual_mat = dz_qual_matrix(_self); \
+    int8_t const *qual_mat = dz_qual_matrix(self); \
     /* TODO: qual: is this the right order? */ \
-    __m128i sc = _mm_setr_epi16( \
-        qual_mat[_mm_extract_epi16(iv, 7)], \
-        qual_mat[_mm_extract_epi16(iv, 6)], \
-        qual_mat[_mm_extract_epi16(iv, 5)], \
-        qual_mat[_mm_extract_epi16(iv, 4)], \
-        qual_mat[_mm_extract_epi16(iv, 3)], \
-        qual_mat[_mm_extract_epi16(iv, 2)], \
-        qual_mat[_mm_extract_epi16(iv, 1)], \
-        qual_mat[_mm_extract_epi16(iv, 0)], \
-    ); \
+    __m128i sc = _mm_setr_epi16(qual_mat[_mm_extract_epi16(iv, 7)], \
+                                qual_mat[_mm_extract_epi16(iv, 6)], \
+                                qual_mat[_mm_extract_epi16(iv, 5)], \
+                                qual_mat[_mm_extract_epi16(iv, 4)], \
+                                qual_mat[_mm_extract_epi16(iv, 3)], \
+                                qual_mat[_mm_extract_epi16(iv, 2)], \
+                                qual_mat[_mm_extract_epi16(iv, 1)], \
+                                qual_mat[_mm_extract_epi16(iv, 0)]); \
     sc; \
 })
 #else
@@ -739,13 +750,16 @@ struct dz_s *dz_init_intl(
     
 	return(self);
 }
+ 
+#ifndef DZ_INCLUDE_ONCE
+// TODO: qual: i think this doesn't change between qual/non-qual
                                    
 static __dz_vectorize
-#ifdef DZ_QUAL_ADJ
-struct dz_alignment_init_s dz_qual_adj_align_init(
-#else
+//#ifdef DZ_QUAL_ADJ
+//struct dz_alignment_init_s dz_qual_adj_align_init(
+//#else
 struct dz_alignment_init_s dz_align_init(
-#endif
+//#endif
      struct dz_s *self,
      uint32_t max_gap_len)
 {
@@ -792,6 +806,8 @@ struct dz_alignment_init_s dz_align_init(
     aln_init.xt = xt;
     return(aln_init);
 }
+                                   
+#endif // DZ_INCLUDE_ONCE
 
 #ifdef DZ_FULL_LENGTH_BONUS
 static __dz_vectorize
@@ -810,7 +826,7 @@ struct dz_s *dz_init(
 	uint16_t full_length_bonus)
 {
 #ifdef DZ_QUAL_ADJ
-    return(dz_qual_adj_init(score_matrix, qual_adj_score_matrix, gap_open, gap_extend, full_length_bonus))
+    return(dz_qual_adj_init(score_matrix, qual_adj_score_matrix, gap_open, gap_extend, full_length_bonus));
 #else
 	return(dz_init_intl(score_matrix, gap_open, gap_extend, full_length_bonus));
 #endif
@@ -833,14 +849,14 @@ struct dz_s *dz_init(
 	//uint64_t max_gap_len)
 {
 #ifdef DZ_QUAL_ADJ
-    return(dz_qual_adj_init(score_matrix, qual_adj_score_matrix, gap_open, gap_extend, 0))
+    return(dz_qual_adj_init(score_matrix, qual_adj_score_matrix, gap_open, gap_extend, 0));
 #else
     return(dz_init_intl(score_matrix, gap_open, gap_extend, 0));
 #endif
 }
 #endif // DZ_FULL_LENGTH_BONUS
                               
-#ifndef DZ_INCUDE_ONCE
+#ifndef DZ_INCLUDE_ONCE
 static __dz_vectorize
 void dz_destroy(
 	struct dz_s *self)
@@ -850,7 +866,7 @@ void dz_destroy(
 	dz_mem_destroy(dz_mem(self));
 	return;
 }
-#endif
+#endif // DZ_INCLUDE_ONCE
                               
 static __dz_vectorize
 #ifdef DZ_QUAL_ADJ
@@ -874,8 +890,8 @@ void dz_flush(
 	return;
 }
                   
-#ifndef DZ_INCUDE_ONCE
-
+#if !defined(DZ_UNITTESTS_INCLUDED) && !defined(DZ_QUAL_ADJ)
+                       
 #if defined(DZ_NUCL_ASCII)
 static size_t const dz_unittest_query_length = 560;
 static char const *dz_unittest_query =
@@ -966,15 +982,24 @@ static int8_t const dz_unittest_score_matrix[DZ_MAT_SIZE * DZ_MAT_SIZE] = {
 	 0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
 };
 
-#endif
+#endif // DZ_PROTEIN
+                       
+#endif // !defined(DZ_UNITTESTS_INCLUDED) && !defined(DZ_QUAL_ADJ)
 
+#ifndef DZ_UNITTEST_SCORE_PARAMS
 #ifdef DZ_FULL_LENGTH_BONUS
 #define DZ_UNITTEST_SCORE_PARAMS	dz_unittest_score_matrix, 5, 1, 0
 #else
 #define DZ_UNITTEST_SCORE_PARAMS	dz_unittest_score_matrix, 5, 1
 #endif
+#endif
+                       
+#ifndef DZ_UNITTEST_MAX_GAP_LEN
 #define DZ_UNITTEST_MAX_GAP_LEN 20
+#endif
 
+#if !defined(DZ_UNITTESTS_INCLUDED) && !defined(DZ_QUAL_ADJ)
+                       
 unittest() {
 	struct dz_s *dz = dz_init(DZ_UNITTEST_SCORE_PARAMS);
 	ut_assert(dz != NULL);
@@ -983,7 +1008,7 @@ unittest() {
 }
                   
                   
-#endif // DZ_INCUDE_ONCE
+#endif
 
 /**
  * @fn dz_pack_query, dz_pack_query_reverse
@@ -1062,7 +1087,7 @@ struct dz_query_s *dz_pack_query_forward(
     // TODO: qual: probably could make this faster if we apply the <<5 once here and store in 16 bit values
     
     #ifdef DZ_QUAL_ADJ
-        __m128i const qmax = _mm_set1_epu8(DZ_NUM_QUAL_SCORES - 1);
+        __m128i const qmax = _mm_set1_epi8(DZ_NUM_QUAL_SCORES - 1);
         __m128i qpv = _mm_setzero_si128();
     
         /* until the end of the query sequence */
@@ -1147,12 +1172,12 @@ struct dz_query_s *dz_pack_query_reverse(
     // TODO: qual: finish this rev
     #ifdef DZ_QUAL_ADJ
         
-        __m128i const qmax = _mm_set1_epu8(DZ_NUM_QUAL_SCORES - 1);
+        __m128i const qmax = _mm_set1_epi8(DZ_NUM_QUAL_SCORES - 1);
         __m128i qpv = _mm_setzero_si128();
         
         /* until the end of the query sequence */
         for(size_t i = 0, end = dz_rounddown(qlen, sizeof(__m128i)); i < end; i += sizeof(__m128i)) {
-            __m128i qtv = _mm_min_epu8(_mm_shuffle_epi8(__mm_loadu_si128((__m128i const *)&qual[qlen - 16 - i]), rv), qmax);
+            __m128i qtv = _mm_min_epu8(_mm_shuffle_epi8(_mm_loadu_si128((__m128i const *)&qual[qlen - 16 - i]), rv), qmax);
             _mm_store_si128((__m128i *)&q->arr[pack_size + i], _mm_alignr_epi8(qtv, qpv, 15));
             qpv = qtv;            /* shift by one to make room for a base */
         }
@@ -1292,14 +1317,14 @@ struct dz_query_s *dz_pack_query(
 #endif
 	} else {
 #ifdef DZ_QUAL_ADJ
-        return(dz_qual_pack_query_reverse(self, &query[qlen], &qual[qlen], (size_t)-qlen));
+        return(dz_qual_adj_pack_query_reverse(self, &query[qlen], &qual[qlen], (size_t)-qlen));
 #else
         return(dz_pack_query_reverse(self, &query[qlen], (size_t)-qlen));
 #endif
 	}
 }
 
-#ifndef DZ_INCLUDE_ONCE
+#if !defined(DZ_UNITTESTS_INCLUDED) && !defined(DZ_QUAL_ADJ)
 
 unittest() {
 	struct dz_s *dz = dz_init(DZ_UNITTEST_SCORE_PARAMS);
@@ -1310,7 +1335,7 @@ unittest() {
 	dz_destroy(dz);
 }
                                           
-#endif // DZ_INCLUDE_ONCE
+#endif
 
 #define _merge_column(w, adj, forefronts, n_forefronts, query, init_s) ({ \
 	for(size_t i = 0; i < n_forefronts; i++) { \
@@ -1519,7 +1544,7 @@ struct dz_forefront_s const *dz_scan(
 #undef _merge_column
 #undef _fill_column
 
-#ifndef DZ_INCLUDE_ONCE
+#if !defined(DZ_UNITTESTS_INCLUDED) && !defined(DZ_QUAL_ADJ)
                                               
 /* short, exact matching sequences */
 unittest( "extend.base" ) {
@@ -1627,7 +1652,8 @@ unittest( "extend.base.revcomp" ) {
 	}
 	dz_destroy(dz);
 }
-#endif // ! DZ_PROTEIN
+                                              
+#endif // !DZ_PROTEIN
 
 /* a small graph */
 unittest( "extend.small" ) {
@@ -1672,8 +1698,12 @@ unittest( "extend.small" ) {
 	}
 	dz_destroy(dz);
 }
+                                              
+#endif // !defined(DZ_UNITTESTS_INCLUDED) && !defined(DZ_QUAL_ADJ)
 
 // TODO: qual: this can probably be shared with qual/non-qual
+       
+#ifndef DZ_INCLUDE_ONCE
                                               
 /**
  * @fn dz_calc_max_rpos
@@ -1739,8 +1769,6 @@ uint64_t dz_calc_max_pos(
                                               
 #endif // DZ_INCLUDE_ONCE
                                               
-// TODO: qual: need to adjust these traceback macros
-
 /* traceback macros */
 #define _is_head(_cap)				( (_cap)->r.epos == 0 )
 #define _dp(_cap)					( dz_cswgv(_cap) - (_cap)->r.epos )
@@ -1914,7 +1942,7 @@ _trace_tail:;
 #undef _idx_dsc
 #undef _load_prev_cap
 
-#ifndef DZ_INCLUDE_ONCE
+#if !defined(DZ_UNITTESTS_INCLUDED) && !defined(DZ_QUAL_ADJ)
                                          
 /* short, exact matching sequences */
 unittest( "trace" ) {
@@ -1939,7 +1967,7 @@ unittest( "trace" ) {
 	dz_destroy(dz);
 }
 
-#endif // DZ_INCLUDE_ONCE
+#endif
 
 #ifdef __cplusplus
 };	/* extern "C" { */
@@ -1947,7 +1975,14 @@ unittest( "trace" ) {
 
 // make sure all of the non-duplicated functions are only included once if we also include
 // include the quality adjusted versions
+#ifndef DZ_INCLUDE_ONCE
 #define DZ_INCLUDE_ONCE
+#endif
+
+// make sure the unittests only get included once and with non-qual-adjusted functions
+#if !defined(DZ_QUAL_ADJ) && !defined(DZ_UNITTESTS_INCLUDED)
+#define DZ_UNITTESTS_INCLUDED
+#endif
 /**
  * end of dozeu.h
  */
