@@ -181,7 +181,7 @@ struct dz_query_s {
     uint32_t blen;
     uint32_t arr_end;
     char const *q;
-    int16_t bonus[2 * sizeof(__m128i) / sizeof(int16_t)];
+    int16_t bonus[16];
     uint8_t arr[];
 };
 dz_static_assert(sizeof(struct dz_query_s) % sizeof(__m128i) == 0);
@@ -555,14 +555,15 @@ unittest() {
     /* get the scores from the quality matrices (unvectorized, unfortunately) */ \
     int8_t const *qual_mat = dz_qual_matrix(self); \
     /* TODO: qual: is this the right order? */ \
-    __m128i sc = _mm_setr_epi16(qual_mat[_mm_extract_epi16(iv, 7)], \
-                                qual_mat[_mm_extract_epi16(iv, 6)], \
-                                qual_mat[_mm_extract_epi16(iv, 5)], \
-                                qual_mat[_mm_extract_epi16(iv, 4)], \
-                                qual_mat[_mm_extract_epi16(iv, 3)], \
-                                qual_mat[_mm_extract_epi16(iv, 2)], \
+    __m128i sc = _mm_setr_epi16(qual_mat[_mm_extract_epi16(iv, 0)], \
                                 qual_mat[_mm_extract_epi16(iv, 1)], \
-                                qual_mat[_mm_extract_epi16(iv, 0)]); \
+                                qual_mat[_mm_extract_epi16(iv, 2)], \
+                                qual_mat[_mm_extract_epi16(iv, 3)], \
+                                qual_mat[_mm_extract_epi16(iv, 4)], \
+                                qual_mat[_mm_extract_epi16(iv, 5)], \
+                                qual_mat[_mm_extract_epi16(iv, 6)], \
+                                qual_mat[_mm_extract_epi16(iv, 7)]); \
+    print_vector(sc)\
     sc; \
 })
 #else
@@ -576,7 +577,8 @@ unittest() {
 #define _calc_score_profile(_i) ({ \
 	__m128i qv = _mm_loadl_epi64((__m128i const *)&parr[(_i) * L]); \
 	__m128i sc = _mm_cvtepi8_epi16(_mm_shuffle_epi8(_mm_load_si128((__m128i const *)self->matrix), _mm_or_si128(rv, qv))); \
-	/* print_vector(_mm_cvtepi8_epi16(rv)); print_vector(_mm_cvtepi8_epi16(qv)); */ \
+    print_vector(sc); \
+     /* print_vector(_mm_cvtepi8_epi16(rv)); print_vector(_mm_cvtepi8_epi16(qv)); */ \
 	sc; \
 })
 #endif
@@ -750,18 +752,66 @@ struct dz_s *dz_init_intl(
     
 	return(self);
 }
- 
+
+#ifdef DZ_FULL_LENGTH_BONUS
+static __dz_vectorize
+#ifdef DZ_QUAL_ADJ
+struct dz_s *dz_qual_adj_init(
+#else
+struct dz_s *dz_init(
+#endif
+	int8_t const *score_matrix,
+#ifdef DZ_QUAL_ADJ
+    int8_t const *qual_adj_score_matrix, /* series of DZ_NUM_QUAL_SCORES adjusted score matrices for each phred base qual (no offset) */
+#endif
+	uint16_t gap_open,
+	uint16_t gap_extend,
+	//uint64_t max_gap_len,
+	uint16_t full_length_bonus)
+{
+#ifdef DZ_QUAL_ADJ
+    return(dz_qual_adj_init_intl(score_matrix, qual_adj_score_matrix, gap_open, gap_extend, full_length_bonus));
+#else
+	return(dz_init_intl(score_matrix, gap_open, gap_extend, full_length_bonus));
+#endif
+}
+
+#else // DZ_FULL_LENGTH_BONUS
+  
+static __dz_vectorize
+#ifdef DZ_QUAL_ADJ
+struct dz_s *dz_qual_adj_init(
+#else
+struct dz_s *dz_init(
+#endif
+	int8_t const *score_matrix,
+#ifdef DZ_QUAL_ADJ
+    int8_t const *qual_adj_score_matrix, /* series of DZ_NUM_QUAL_SCORES adjusted score matrices for each phred base qual (no offset) */
+#endif
+	uint16_t gap_open,
+	uint16_t gap_extend)//,
+	//uint64_t max_gap_len)
+{
+#ifdef DZ_QUAL_ADJ
+    return(dz_qual_adj_init_intl(score_matrix, qual_adj_score_matrix, gap_open, gap_extend, 0));
+#else
+    return(dz_init_intl(score_matrix, gap_open, gap_extend, 0));
+#endif
+}
+#endif // DZ_FULL_LENGTH_BONUS
+
 #ifndef DZ_INCLUDE_ONCE
+                              
 // TODO: qual: i think this doesn't change between qual/non-qual
-                                   
+
 static __dz_vectorize
 //#ifdef DZ_QUAL_ADJ
 //struct dz_alignment_init_s dz_qual_adj_align_init(
 //#else
 struct dz_alignment_init_s dz_align_init(
-//#endif
-     struct dz_s *self,
-     uint32_t max_gap_len)
+    //#endif
+    struct dz_s *self,
+    uint32_t max_gap_len)
 {
     /* fill the root (the leftmost) column; first init vectors */
     
@@ -806,55 +856,8 @@ struct dz_alignment_init_s dz_align_init(
     aln_init.xt = xt;
     return(aln_init);
 }
-                                   
+                              
 #endif // DZ_INCLUDE_ONCE
-
-#ifdef DZ_FULL_LENGTH_BONUS
-static __dz_vectorize
-#ifdef DZ_QUAL_ADJ
-struct dz_s *dz_qual_adj_init(
-#else
-struct dz_s *dz_init(
-#endif
-	int8_t const *score_matrix,
-#ifdef DZ_QUAL_ADJ
-    int8_t const *qual_adj_score_matrix, /* series of DZ_NUM_QUAL_SCORES adjusted score matrices for each phred base qual (no offset) */
-#endif
-	uint16_t gap_open,
-	uint16_t gap_extend,
-	//uint64_t max_gap_len,
-	uint16_t full_length_bonus)
-{
-#ifdef DZ_QUAL_ADJ
-    return(dz_qual_adj_init(score_matrix, qual_adj_score_matrix, gap_open, gap_extend, full_length_bonus));
-#else
-	return(dz_init_intl(score_matrix, gap_open, gap_extend, full_length_bonus));
-#endif
-}
-
-#else // DZ_FULL_LENGTH_BONUS
-  
-static __dz_vectorize
-#ifdef DZ_QUAL_ADJ
-struct dz_s *dz_qual_adj_init(
-#else
-struct dz_s *dz_init(
-#endif
-	int8_t const *score_matrix,
-#ifdef DZ_QUAL_ADJ
-    int8_t const *qual_adj_score_matrix, /* series of DZ_NUM_QUAL_SCORES adjusted score matrices for each phred base qual (no offset) */
-#endif
-	uint16_t gap_open,
-	uint16_t gap_extend)//,
-	//uint64_t max_gap_len)
-{
-#ifdef DZ_QUAL_ADJ
-    return(dz_qual_adj_init(score_matrix, qual_adj_score_matrix, gap_open, gap_extend, 0));
-#else
-    return(dz_init_intl(score_matrix, gap_open, gap_extend, 0));
-#endif
-}
-#endif // DZ_FULL_LENGTH_BONUS
                               
 #ifndef DZ_INCLUDE_ONCE
 static __dz_vectorize
@@ -1029,20 +1032,29 @@ struct dz_query_s *dz_pack_query_forward(
 #endif
 	 size_t qlen)
 {
+    debug("entering pack forward");
 	size_t const L = sizeof(__m128i) / sizeof(uint16_t);
     // TODO: qual: make sure I'm doing this right
     size_t pack_size = dz_roundup(qlen + 1, L) + sizeof(__m128i);
+    debug("asking for %d bytes", sizeof(struct dz_query_s) + 2 * pack_size);
     #ifdef DZ_QUAL_ADJ
         struct dz_query_s *q = (struct dz_query_s *)dz_mem_malloc(dz_mem(self), sizeof(struct dz_query_s) + 2 * pack_size);
     #else
         struct dz_query_s *q = (struct dz_query_s *)dz_mem_malloc(dz_mem(self), sizeof(struct dz_query_s) + pack_size);
     #endif
-	*q = (struct dz_query_s){
-		.blen = (uint32_t) ((qlen == 0 ? 0 : dz_roundup(qlen + 1, L) / L)),
-        .arr_end = (uint32_t) pack_size,
-		.q = query,
-		.bonus = { 0 }
-	};
+    q->blen = qlen == 0 ? 0 : dz_roundup(qlen + 1, L) / L;
+    q->arr_end = pack_size;
+    q->q = query;
+    
+    _mm_store_si128((__m128i *)q->bonus, _mm_setzero_si128());
+    _mm_store_si128(((__m128i *)q->bonus) + 1, _mm_setzero_si128());
+//	*q = (struct dz_query_s){
+//		.blen = (uint32_t) ((qlen == 0 ? 0 : dz_roundup(qlen + 1, L) / L)),
+//        .arr_end = (uint32_t) pack_size,
+//		.q = query,
+//		.bonus = { 0 }
+//	};
+    debug("allocated and initialized");
 	/*
 	 * tentative support of full-length bonus; precaclulated bonus score is saved at q->bonus[0] and q->bonus[1]; [0] for non-tail vector and [1] for tail vector
 	 */
@@ -1072,6 +1084,7 @@ struct dz_query_s *dz_pack_query_forward(
 		_mm_store_si128((__m128i *)&q->arr[i], _mm_alignr_epi8(tv, pv, 15)); /* shift by one to make room for a base */
         pv = tv;
 	}
+    debug("packed seq main loop");
 
 	/* continue the same conversion on the remainings */
 	// _mm_store_si128((__m128i *)&q->arr[dz_rounddown(qlen, sizeof(__m128i))], _mm_srli_si128(pv, 15));
@@ -1084,6 +1097,7 @@ struct dz_query_s *dz_pack_query_forward(
 		q->arr[i + 1] = qS;
 	}
     
+    debug("packed seq tail");
     // TODO: qual: probably could make this faster if we apply the <<5 once here and store in 16 bit values
     
     #ifdef DZ_QUAL_ADJ
@@ -1096,6 +1110,8 @@ struct dz_query_s *dz_pack_query_forward(
             _mm_store_si128((__m128i *)&q->arr[pack_size + i], _mm_alignr_epi8(qtv, qpv, 15)); /* shift by one to make room for a base */
             qpv = qtv;
         }
+    
+    debug("packed qual main loop");
     
         /* continue the same conversion on the remainings */
         q->arr[pack_size + dz_rounddown(qlen, sizeof(__m128i))] = _mm_extract_epi8(qpv, 15);
@@ -1505,6 +1521,7 @@ struct dz_forefront_s const *dz_extend(
 	struct dz_forefront_s const **forefronts, size_t n_forefronts,
 	char const *ref, int32_t rlen, uint32_t rid, uint16_t xt)
 {
+    debug("entering extend (external)");
 #ifdef DZ_QUAL_ADJ
     return(dz_qual_adj_extend_intl(self, query, forefronts, n_forefronts, ref, rlen, rid, xt, INT16_MIN));
 #else
