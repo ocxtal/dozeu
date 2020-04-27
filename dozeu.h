@@ -1,5 +1,7 @@
 // $(CC) -O3 -march=native -DMAIN -o dozeu dozeu.c
+//#ifdef DZ_QUAL_ADJ
 //#define DEBUG
+//#endif
 //#define DZ_PRINT_VECTOR
 /**
  * @file dozeu.h
@@ -108,7 +110,7 @@ enum dz_alphabet {
 	dz_static_assert(DZ_MAT_SIZE <= 32);
 #endif // DZ_PROTEIN
 
-#if (defined(DEBUG) || defined(UNITTEST)) && !defined(__cplusplus)
+#if (defined(DEBUG) || defined(UNITTEST))
 #  include "log.h"
 #  define UNITTEST_ALIAS_MAIN		0
 #  define UNITTEST_UNIQUE_ID		3213
@@ -275,8 +277,28 @@ dz_static_assert(sizeof(struct dz_s) % sizeof(__m128i) == 0);
 	(int16_t)_mm_extract_epi16(v, 1), \
 	(int16_t)_mm_extract_epi16(v, 0)); \
 }
+#define print_vector8(v) { \
+debug("%s (%d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d)", #v, \
+    (int)_mm_extract_epi8(v, 15), \
+    (int)_mm_extract_epi8(v, 14), \
+    (int)_mm_extract_epi8(v, 13), \
+    (int)_mm_extract_epi8(v, 12), \
+    (int)_mm_extract_epi8(v, 11), \
+    (int)_mm_extract_epi8(v, 10), \
+    (int)_mm_extract_epi8(v, 9), \
+    (int)_mm_extract_epi8(v, 8), \
+    (int)_mm_extract_epi8(v, 7), \
+    (int)_mm_extract_epi8(v, 6), \
+    (int)_mm_extract_epi8(v, 5), \
+    (int)_mm_extract_epi8(v, 4), \
+    (int)_mm_extract_epi8(v, 3), \
+    (int)_mm_extract_epi8(v, 2), \
+    (int)_mm_extract_epi8(v, 1), \
+    (int)_mm_extract_epi8(v, 0)); \
+}
 #else
 #define print_vector(v) ;
+#define print_vector8(v) ;
 #endif
 
 /**
@@ -364,10 +386,10 @@ void dz_mem_destroy(
 	struct dz_mem_s *mem)
 {
 	struct dz_mem_block_s *blk = mem->blk.next;
-	debug("cleanup memory chain, blk(%p)", blk);
+    debug("cleanup memory chain, blk(%p)", blk);
 	while(blk != NULL) {
 		struct dz_mem_block_s *next = blk->next;
-		debug("free blk(%p), next(%p)", blk, next);
+        debug("free blk(%p), next(%p)", blk, next);
 		dz_free(blk); blk = next;
 	}
 	dz_free(mem);
@@ -378,7 +400,7 @@ uint64_t dz_mem_add_stack(
 	struct dz_mem_s *mem,
 	size_t size)
 {
-	debug("add_stack, ptr(%p)", mem->stack.curr->next);
+    debug("add_stack, ptr(%p)", mem->stack.curr->next);
 	if(mem->stack.curr->next == NULL
        || dz_unlikely(mem->stack.curr->next->size < size + dz_roundup(sizeof(struct dz_mem_block_s), DZ_MEM_ALIGN_SIZE))) {
         if (mem->stack.curr->next != NULL) {
@@ -397,7 +419,7 @@ uint64_t dz_mem_add_stack(
 			2 * mem->stack.curr->size
 		);
 		struct dz_mem_block_s *blk = (struct dz_mem_block_s *)dz_malloc(size);
-		debug("malloc called, blk(%p)", blk);
+        debug("malloc called, blk(%p)", blk);
 		if(blk == NULL) { return(1); }
 
 		/* link new node to the forefront of the current chain */
@@ -422,10 +444,12 @@ void *dz_mem_malloc(
     // also, where does 4096 come from?
     // also, don't we need to provide the size to ensure that a large enough block is allocated?
 	//if(dz_mem_stack_rem(mem) < 4096) { dz_mem_add_stack(mem, 0); }
-    if(dz_mem_stack_rem(mem) < size) { dz_mem_add_stack(mem, size); }
+    if(dz_mem_stack_rem(mem) < size) {
+        dz_mem_add_stack(mem, size);
+    }
 	void *ptr = (void *)mem->stack.top;
 	mem->stack.top += dz_roundup(size, sizeof(__m128i));
-	return(ptr);
+    return(ptr);
 }
                      
 #endif // DZ_INCLUDE_ONCE
@@ -1032,30 +1056,22 @@ struct dz_query_s *dz_pack_query_forward(
 #endif
 	 size_t qlen)
 {
-    debug("entering pack forward");
 	size_t const L = sizeof(__m128i) / sizeof(uint16_t);
     // TODO: qual: make sure I'm doing this right
-    size_t pack_size = dz_roundup(qlen + 1, L) + sizeof(__m128i);
-    debug("asking for %d bytes", sizeof(struct dz_query_s) + 2 * pack_size);
+    size_t pack_size = dz_roundup(qlen + 1, sizeof(__m128i));
     #ifdef DZ_QUAL_ADJ
         struct dz_query_s *q = (struct dz_query_s *)dz_mem_malloc(dz_mem(self), sizeof(struct dz_query_s) + 2 * pack_size);
     #else
         struct dz_query_s *q = (struct dz_query_s *)dz_mem_malloc(dz_mem(self), sizeof(struct dz_query_s) + pack_size);
     #endif
-    q->blen = qlen == 0 ? 0 : dz_roundup(qlen + 1, L) / L;
-    q->arr_end = pack_size;
-    q->q = query;
-    
-    _mm_store_si128((__m128i *)q->bonus, _mm_setzero_si128());
-    _mm_store_si128(((__m128i *)q->bonus) + 1, _mm_setzero_si128());
-//	*q = (struct dz_query_s){
-//		.blen = (uint32_t) ((qlen == 0 ? 0 : dz_roundup(qlen + 1, L) / L)),
-//        .arr_end = (uint32_t) pack_size,
-//		.q = query,
-//		.bonus = { 0 }
-//	};
-    debug("allocated and initialized");
-	/*
+	*q = (struct dz_query_s){
+		.blen = (uint32_t) ((qlen == 0 ? 0 : dz_roundup(qlen + 1, L) / L)),
+        .arr_end = (uint32_t) pack_size,
+		.q = query,
+		.bonus = { 0 }
+	};
+
+    /*
 	 * tentative support of full-length bonus; precaclulated bonus score is saved at q->bonus[0] and q->bonus[1]; [0] for non-tail vector and [1] for tail vector
 	 */
 	q->bonus[L + (qlen % L)] = self->bonus;
@@ -1084,7 +1100,6 @@ struct dz_query_s *dz_pack_query_forward(
 		_mm_store_si128((__m128i *)&q->arr[i], _mm_alignr_epi8(tv, pv, 15)); /* shift by one to make room for a base */
         pv = tv;
 	}
-    debug("packed seq main loop");
 
 	/* continue the same conversion on the remainings */
 	// _mm_store_si128((__m128i *)&q->arr[dz_rounddown(qlen, sizeof(__m128i))], _mm_srli_si128(pv, 15));
@@ -1097,7 +1112,6 @@ struct dz_query_s *dz_pack_query_forward(
 		q->arr[i + 1] = qS;
 	}
     
-    debug("packed seq tail");
     // TODO: qual: probably could make this faster if we apply the <<5 once here and store in 16 bit values
     
     #ifdef DZ_QUAL_ADJ
@@ -1110,9 +1124,7 @@ struct dz_query_s *dz_pack_query_forward(
             _mm_store_si128((__m128i *)&q->arr[pack_size + i], _mm_alignr_epi8(qtv, qpv, 15)); /* shift by one to make room for a base */
             qpv = qtv;
         }
-    
-    debug("packed qual main loop");
-    
+        
         /* continue the same conversion on the remainings */
         q->arr[pack_size + dz_rounddown(qlen, sizeof(__m128i))] = _mm_extract_epi8(qpv, 15);
         for(size_t i = dz_rounddown(qlen, sizeof(__m128i)); i < qlen; i++) {
@@ -1141,7 +1153,7 @@ struct dz_query_s *dz_pack_query_reverse(
 {
 	size_t const L = sizeof(__m128i) / sizeof(uint16_t);
     // TODO: qual: make sure I'm doing this right
-    size_t pack_size = dz_roundup(qlen + 1, L) + sizeof(__m128i);
+    size_t pack_size = dz_roundup(qlen + 1, sizeof(__m128i));
     #ifdef DZ_QUAL_ADJ
         struct dz_query_s *q = (struct dz_query_s *)dz_mem_malloc(dz_mem(self), sizeof(struct dz_query_s) + 2 * pack_size);
     #else
