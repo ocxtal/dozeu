@@ -1,5 +1,5 @@
 // $(CC) -O3 -march=native -DMAIN -o dozeu dozeu.c
-//#ifdef DZ_QUAL_ADJ
+//#ifndef DZ_QUAL_ADJ
 //#define DEBUG
 //#endif
 //#define DZ_PRINT_VECTOR
@@ -112,6 +112,11 @@ enum dz_alphabet {
 
 #if (defined(DEBUG) || defined(UNITTEST))
 #  include "log.h"
+#else
+#  define debug(...)                ;
+#endif
+                     
+#ifdef UNITTEST
 #  define UNITTEST_ALIAS_MAIN		0
 #  define UNITTEST_UNIQUE_ID		3213
 #  include "unittest.h"
@@ -120,7 +125,6 @@ unittest() { debug("hello"); }
 #else
 #  define unittest(...)				static void dz_pp_cat(dz_unused_, __LINE__)(void)
 #  define ut_assert(...)			;
-#  define debug(...)				;
 #  define trap()					;
 #endif
 
@@ -497,7 +501,7 @@ unittest() {
 #define _begin_column_head(_spos, _epos, _adj, _forefronts, _n_forefronts) ({ \
 	/* calculate sizes */ \
 	size_t next_req = _calc_next_size(_spos, _epos, _n_forefronts); \
-	/* allocate from heap TODO: shouldn't we make sure we get enough allocation?  */  \
+	/* allocate from heap */  \
     if(dz_mem_stack_rem(dz_mem(self)) < next_req) { dz_mem_add_stack(dz_mem(self), next_req); } /* 0); }*/ \
 	/* push head-cap */ \
 	struct dz_cap_s *cap = _init_cap(_adj, 0xff, _forefronts, _n_forefronts); \
@@ -635,12 +639,15 @@ unittest() {
 #define _load_vector(_p) \
 	__m128i e = _mm_load_si128((__m128i const *)(&dz_cswgv(_p)->e)); /* print_vector(e); */ \
 	__m128i s = _mm_load_si128((__m128i const *)(&dz_cswgv(_p)->s)); /* print_vector(s); */
+
+                     
 #define _update_vector(_p) { \
 	__m128i sc = _calc_score_profile(_p); \
 	__m128i te = _mm_subs_epi16(_mm_max_epi16(e, _mm_subs_epi16(s, giv)), gev1); \
 	/* print_vector(_mm_alignr_epi8(s, ps, 14)); print_vector(sc); */ \
-	__m128i ts = _mm_max_epi16(te, _mm_adds_epi16(sc, _mm_alignr_epi8(s, ps, 14))); ps = s; \
-	__m128i tf = _mm_max_epi16(_mm_subs_epi16(ts, giv), _mm_subs_epi16(_mm_alignr_epi8(minv, f, 14), gev1)); \
+	__m128i ts = _mm_max_epi16(te, _mm_adds_epi16(sc, _mm_alignr_epi8(s, ps, 14))); \
+    ps = s; \
+    __m128i tf = _mm_subs_epi16(_mm_max_epi16(_mm_subs_epi16(_mm_alignr_epi8(ts, pts, 14), giv), _mm_alignr_epi8(minv, f, 14)), gev1); \
 	tf = _mm_max_epi16(tf, _mm_subs_epi16(_mm_alignr_epi8(tf, minv, 14), gev1)); \
 	tf = _mm_max_epi16(tf, _mm_subs_epi16(_mm_alignr_epi8(tf, minv, 12), gev2)); \
 	tf = _mm_max_epi16(tf, _mm_subs_epi16(_mm_alignr_epi8(tf, minv, 8), gev4)); \
@@ -648,6 +655,7 @@ unittest() {
 	maxv = _mm_max_epi16(maxv, _add_bonus(_p, ts)); \
 	/* print_vector(te); print_vector(_add_bonus(_p, ts)); print_vector(tf); print_vector(maxv);*/ \
 	e = te; f = tf; s = ts; \
+    pts = ts; \
 }
 #define _store_vector(_p) { \
 	_mm_store_si128((__m128i *)(&dz_swgv(_p)->e), e); \
@@ -852,7 +860,7 @@ struct dz_alignment_init_s dz_align_init(
     uint16_t xt = self->giv[0] + self->gev[0] * max_gap_len;
     // calculate the x-drop threshold for this gap length
     __m128i xtv = _mm_set1_epi16(-xt);
-    
+        
     /* e, f, and s needed for _store_vector */
     __m128i const e = _mm_set1_epi16(DZ_CELL_MIN);
     /* until the X-drop test fails on all the cells in a vector */
@@ -1414,7 +1422,7 @@ unittest() {
 	_init_rch(query, rt, rrem); \
 	struct dz_swgv_s *cdp = _begin_column(w, rch, rrem); \
 	/* init vectors */ \
-	__m128i f = minv, ps = _mm_set1_epi16(init_s), maxv = _mm_set1_epi16(INT16_MIN); \
+	__m128i f = minv, ps = _mm_set1_epi16(init_s), maxv = _mm_set1_epi16(INT16_MIN), pts = _mm_set1_epi16(INT16_MIN); \
 	__m128i const xtv = _mm_set1_epi16(w.inc - xt);	/* next offset == current max thus X-drop threshold is always -xt */ \
 	/* until the bottommost vertically placed band... */ \
 	uint32_t sspos = w.r.spos;					/* save spos on the stack */ \
@@ -1892,16 +1900,16 @@ struct dz_alignment_s *dz_trace(
 			(score == (_s(s, pcap, idx - 1) + _pair_score(self, query, rch, idx)))); \
 	}
 	#define _match(_idx) { \
-		if(dz_inside(pcap->r.spos, _vector_idx(idx - 1), pcap->r.epos) \
-		   && score == (_s(s, pcap, idx - 1) + _pair_score(self, query, rch, idx))) { \
-			uint64_t eq = dz_pair_eq(self, query, rch, idx); \
-			*--path = DZ_CIGAR_OP>>(eq<<3); cnt[eq]++; \
-			score = _s(s, pcap, idx - 1); idx--; rch = _load_prev_cap(s, score, _idx); \
-			continue; \
+        if(dz_inside(pcap->r.spos, _vector_idx(idx - 1), pcap->r.epos) \
+           && score == (_s(s, pcap, idx - 1) + dz_pair_score(self, query, rch, idx))) { \
+            uint64_t eq = dz_pair_eq(self, query, rch, idx); \
+            *--path = DZ_CIGAR_OP>>(eq<<3); cnt[eq]++; \
+            score = _s(s, pcap, idx - 1); idx--; rch = _load_prev_cap(s, score, _idx); \
+            continue; \
 		} \
 	}
 	#define _ins(_idx) { \
-		if(_vector_idx(idx - 1) >= cap->r.spos && score == _s(f, cap, idx)) { \
+		if(dz_inside(cap->r.spos, _vector_idx(idx - 1), cap->r.epos)&& score == _s(f, cap, idx)) { \
 			_debug(I); \
 			while(_vector_idx(idx - 1) >= cap->r.spos && score != _s(s, cap, idx - 1) - self->gev[0] - self->giv[0]) { \
 				*--path = (DZ_CIGAR_OP>>16) & 0xff; cnt[2]++; score = _s(f, cap, idx - 1); idx--; _debug(I); \
@@ -1914,9 +1922,9 @@ struct dz_alignment_s *dz_trace(
 		if(dz_inside(pcap->r.spos, _vector_idx(idx), pcap->r.epos) && score == _s(e, cap, idx)) { \
 			_debug(D); \
 			while(dz_inside(pcap->r.spos, _vector_idx(idx), pcap->r.epos) && score == _s(e, pcap, idx) - self->gev[0]) { \
-				*--path = (DZ_CIGAR_OP>>24) & 0xff; cnt[3]++; score = _s(e, pcap, idx); _load_prev_cap(e, score, _idx); _debug(D); \
+                *--path = (DZ_CIGAR_OP>>24) & 0xff; cnt[3]++; score = _s(e, pcap, idx); _load_prev_cap(e, score, _idx); _debug(D); \
 			} \
-			*--path = (DZ_CIGAR_OP>>24) & 0xff; cnt[3]++; score = _s(s, pcap, idx); rch = _load_prev_cap(s, score, _idx); \
+            *--path = (DZ_CIGAR_OP>>24) & 0xff; cnt[3]++; score = _s(s, pcap, idx); rch = _load_prev_cap(s, score, _idx); \
 			continue; \
 		} \
 	}
