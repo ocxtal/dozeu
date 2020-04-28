@@ -1,5 +1,5 @@
 // $(CC) -O3 -march=native -DMAIN -o dozeu dozeu.c
-//#ifndef DZ_QUAL_ADJ
+//#ifdef DZ_QUAL_ADJ
 //#define DEBUG
 //#endif
 //#define DZ_PRINT_VECTOR
@@ -1901,7 +1901,7 @@ struct dz_alignment_s *dz_trace(
 	}
 	#define _match(_idx) { \
         if(dz_inside(pcap->r.spos, _vector_idx(idx - 1), pcap->r.epos) \
-           && score == (_s(s, pcap, idx - 1) + dz_pair_score(self, query, rch, idx))) { \
+           && score == (_s(s, pcap, idx - 1) + _pair_score(self, query, rch, idx))) { \
             uint64_t eq = dz_pair_eq(self, query, rch, idx); \
             *--path = DZ_CIGAR_OP>>(eq<<3); cnt[eq]++; \
             score = _s(s, pcap, idx - 1); idx--; rch = _load_prev_cap(s, score, _idx); \
@@ -1909,7 +1909,7 @@ struct dz_alignment_s *dz_trace(
 		} \
 	}
 	#define _ins(_idx) { \
-		if(dz_inside(cap->r.spos, _vector_idx(idx - 1), cap->r.epos)&& score == _s(f, cap, idx)) { \
+		if(dz_inside(cap->r.spos, _vector_idx(idx - 1), cap->r.epos) && score == _s(f, cap, idx)) { \
 			_debug(I); \
 			while(_vector_idx(idx - 1) >= cap->r.spos && score != _s(s, cap, idx - 1) - self->gev[0] - self->giv[0]) { \
 				*--path = (DZ_CIGAR_OP>>16) & 0xff; cnt[2]++; score = _s(f, cap, idx - 1); idx--; _debug(I); \
