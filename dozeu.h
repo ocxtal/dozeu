@@ -45,14 +45,8 @@ extern "C" {
 #include <stddef.h>
 #include <string.h>
 
-/* _MM_FROUND_CUR_DIRECTION is defined in smmintrin.h (the include
-   file for SSE4.1), so if it's already defined we assume that the
-   SSE4.1 API is available and we can skip including <smmintrin.h>.
-   This allows Dozeu to use alternative implementations (e.g.,
-   <https://github.com/nemequ/simde>) without depending on them. */
-#if !defined(_MM_FROUND_CUR_DIRECTION)
-#include <smmintrin.h>
-#endif
+#define SIMDE_ENABLE_NATIVE_ALIASES
+#include "simde/x86/sse4.1.h"
 
 #ifndef DZ_INCLUDE_ONCE
 
@@ -147,9 +141,6 @@ unittest() { debug("hello"); }
 #define dz_ut_sel(a, b, c)			( (DZ_UNITTEST_INDEX == 0) ? (a) : ((DZ_UNITTEST_INDEX == 1) ? (b) : (c)) )
 
 /* vectorize */
-#ifndef __x86_64__
-#  error "x86_64 is required"
-#endif
 #define __dz_vectorize			/* follow the compiler options */
 
 /* inlining (FIXME: add appropriate __force_inline flag) */
