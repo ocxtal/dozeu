@@ -42,7 +42,15 @@ extern "C" {
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
-#include <x86intrin.h>
+
+/* _MM_FROUND_CUR_DIRECTION is defined in smmintrin.h (the include
+   file for SSE4.1), so if it's already defined we assume that the
+   SSE4.1 API is available and we can skip including <smmintrin.h>.
+   This allows Dozeu to use alternative implementations (e.g.,
+   <https://github.com/nemequ/simde>) without depending on them. */
+#if !defined(_MM_FROUND_CUR_DIRECTION)
+#include <smmintrin.h>
+#endif
 
 #ifndef DZ_CIGAR_OP
 #  define DZ_CIGAR_OP				0x04030201
@@ -118,12 +126,7 @@ unittest() { debug("hello"); }
 #ifndef __x86_64__
 #  error "x86_64 is required"
 #endif
-#ifndef __SSE4_1__
-#  warning "SSE4.1 is automatically enabled in dozeu.h, please check compatibility to the system."
-#  define __dz_vectorize			__attribute__(( target( "sse4.1" ) ))
-#else
-#  define __dz_vectorize			/* follow the compiler options */
-#endif
+#define __dz_vectorize			/* follow the compiler options */
 
 /* inlining (FIXME: add appropriate __force_inline flag) */
 #define __dz_force_inline			inline
@@ -146,11 +149,7 @@ unittest() { debug("hello"); }
 #define dz_rm_ofs(_x)				( (int16_t)((uint16_t)(_x) ^ (uint16_t)0x8000) )
 
 
-#ifdef __SSE4_1__
-#  define dz_is_all_zero(x)			( _mm_test_all_zeros((x), (x)) == 1 )
-#else
-// #  define dz_is_all_zero(x)			( _mm_movemask_epi8((x)) == 0 )
-#endif
+#define dz_is_all_zero(x)			( _mm_test_all_zeros((x), (x)) == 1 )
 
 #define DZ_MEM_MARGIN_SIZE			( 256 )
 #define DZ_MEM_ALIGN_SIZE			( 16 )
