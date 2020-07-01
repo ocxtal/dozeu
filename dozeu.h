@@ -1431,6 +1431,7 @@ unittest() {
         _update_vector(p); \
 		if(dz_unlikely(_test_xdrop(s, xtv))) {	/* mark _unlikely to move out of the core loop */ \
 			/* drop either leading or trailing vector, skip the forefront extension when the forefront is clipped */ \
+            pts = _mm_set1_epi16(INT16_MIN); \
 			if(p == w.r.spos) { \
                 w.r.spos++; cdp--; continue; \
             } else { \
