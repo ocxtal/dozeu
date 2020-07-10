@@ -81,14 +81,20 @@ enum dz_alphabet {
 		rN = 0x90, qN = 0x90, qS = 0x02		/* pshufb instruction clears the column when the 7-th bit of the index is set */
 	#endif
 };
+#ifdef DZ_FULL_LENGTH_BONUS
+#define dz_end_bonus(_self, _query, _i)            ((_i) / 8 == (_query)->blen - 1 ? (_query)->bonus[8 + ((_i) & 7)] : 0)
+#else
+#define dz_end_bonus(_self, _query, _i)            0;
+#endif
+
 /* get the first index of the quals from a packed query (only valid if DZ_QUAL_ADJ is defined) */
 #define dz_quals(_query)                           ( (uint8_t const *) &(_query)->arr[(_query)->arr_end] )
 /* get the base quality adjusted matrix (only valid if DZ_QUAL_ADJ is defined) */
 #define dz_qual_matrix(_self)                      ( (int8_t const *)((_self) + 1) )
 
-#define dz_pair_score(_self, _q, _r, _i)	       ( (_self)->matrix[((_r) | (_q)->arr[(_i)]) & 0x1f] )
+#define dz_pair_score(_self, _q, _r, _i)	       ( (_self)->matrix[((_r) | (_q)->arr[(_i)]) & 0x1f] + dz_end_bonus(_self, _q, _i))
 
-#define dz_qual_adj_pair_score(_self, _q, _r, _i)  ( dz_qual_matrix(_self)[(((uint32_t) dz_quals(_q)[(_i)]) << 5) | ((uint32_t)(_r)) | ((uint32_t)((_q)->arr[(_i)] & 0x1f))] )
+#define dz_qual_adj_pair_score(_self, _q, _r, _i)  ( dz_qual_matrix(_self)[(((uint32_t) dz_quals(_q)[(_i)]) << 5) | ((uint32_t)(_r)) | ((uint32_t)((_q)->arr[(_i)] & 0x1f))] + dz_end_bonus(_self, _q, _i) )
 
 #define dz_pair_eq(_self, _q, _r, _i)		       ( (uint32_t)((_q)->arr[(_i)]) == ((uint32_t)(_r)<<2) )
 
@@ -98,7 +104,7 @@ enum dz_alphabet {
 #  ifndef DZ_MAT_SIZE
 #    define DZ_MAT_SIZE				( 32 )
 #  endif
-#define dz_pair_score(_self, _q, _r, _i)	( (int8_t)((_q)->arr[(_r) * (_q)->blen * L + (_i)]) )
+#define dz_pair_score(_self, _q, _r, _i)	( (int8_t)((_q)->arr[(_r) * (_q)->blen * L + (_i)]) + dz_end_bonus(_self, _q, _i))
 #define dz_pair_eq(_self, _q, _r, _i)		( (uint32_t)((_q)->q[(_i) - 1] & 0x1f) == (uint32_t)(_r) )
 #endif
 
@@ -632,7 +638,7 @@ unittest() {
 
                      
 #define _update_vector(_p) { \
-	__m128i sc = _calc_score_profile(_p); \
+	__m128i sc = _add_bonus(_p, _calc_score_profile(_p)); \
 	__m128i te = _mm_subs_epi16(_mm_max_epi16(e, _mm_subs_epi16(s, giv)), gev1); \
 	/* print_vector(_mm_alignr_epi8(s, ps, 14)); print_vector(sc); */ \
 	__m128i ts = _mm_max_epi16(te, _mm_adds_epi16(sc, _mm_alignr_epi8(s, ps, 14))); \
@@ -642,7 +648,7 @@ unittest() {
 	tf = _mm_max_epi16(tf, _mm_subs_epi16(_mm_alignr_epi8(tf, minv, 12), gev2)); \
 	tf = _mm_max_epi16(tf, _mm_subs_epi16(_mm_alignr_epi8(tf, minv, 8), gev4)); \
 	ts = _mm_max_epi16(ts, tf); print_vector(ts); \
-	maxv = _mm_max_epi16(maxv, _add_bonus(_p, ts)); \
+	maxv = _mm_max_epi16(maxv, ts); \
 	/* print_vector(te); print_vector(_add_bonus(_p, ts)); print_vector(tf); print_vector(maxv);*/ \
 	e = te; f = tf; s = ts; \
     pts = ts; \
@@ -1738,10 +1744,8 @@ unittest( "extend.small" ) {
  */
 static __dz_vectorize
 int64_t dz_calc_max_rpos(
-	struct dz_s *self,
 	struct dz_forefront_s const *forefront)
 {
-	(void)self;
 	struct dz_cap_s const *pcap = forefront->mcap;
 	int32_t rpos = (pcap == dz_ccap(forefront)) ? 0 : pcap->rrem;
 	return((int64_t)rpos);									/* signed expansion */
@@ -1751,11 +1755,8 @@ int64_t dz_calc_max_rpos(
  * @fn dz_calc_max_qpos
  */
 static __dz_vectorize
-uint64_t dz_calc_max_qpos(
-	struct dz_s *self,
-	struct dz_forefront_s const *forefront)
+uint64_t dz_calc_max_qpos(struct dz_forefront_s const *forefront)
 {
-	(void)self;
 	size_t const L = sizeof(__m128i) / sizeof(uint16_t);
 	#define _dp(_cap)					( (struct dz_swgv_s const *)(_cap) - (_cap)->r.epos )
 
@@ -1763,7 +1764,7 @@ uint64_t dz_calc_max_qpos(
 	struct dz_cap_s const *pcap = forefront->mcap;
 	__m128i const maxv = _mm_set1_epi16(forefront->inc);
 	for(uint64_t p = pcap->r.spos; p < pcap->r.epos; p++) {
-		__m128i const s = _add_bonus(p, _mm_load_si128(&_dp(pcap)[p].s)); print_vector(s);
+		__m128i const s = _mm_load_si128(&_dp(pcap)[p].s); print_vector(s);
 		uint64_t eq = _mm_movemask_epi8(_mm_cmpeq_epi16(s, maxv));
 		if(eq != 0) {
 			/* tzcntq is faster but avoid using it b/c it requires relatively newer archs */
@@ -1785,14 +1786,12 @@ uint64_t dz_calc_max_qpos(
  * @brief rpos (signed int) in upper 32bit, qpos (unsigned int) in lower 32bit
  */
 static __dz_vectorize
-uint64_t dz_calc_max_pos(
-	struct dz_s *self,
-	struct dz_forefront_s const *forefront)
+uint64_t dz_calc_max_pos(struct dz_forefront_s const *forefront)
 {
 	struct dz_cap_s const *pcap = forefront->mcap;
 	if(pcap == NULL) { debug("pcap == NULL, rlen(%d)", (int32_t)forefront->rlen); return(((uint64_t)forefront->rlen)<<32); }							/* is root */
 	debug("forefront(%p), pcap(%p), rrem(%d), rlen(%d)", forefront, pcap, (int32_t)pcap->rrem, (int32_t)forefront->rlen);
-	return((dz_calc_max_rpos(self, forefront)<<32) | dz_calc_max_qpos(self, forefront));
+	return((dz_calc_max_rpos(forefront)<<32) | dz_calc_max_qpos(forefront));
 }
                                               
 #endif // DZ_INCLUDE_ONCE
@@ -1855,7 +1854,7 @@ struct dz_alignment_s *dz_trace(
     if(forefront->mcap == NULL) { debug("mcap is null"); return(NULL); }
 
 	/* detect pos */
-	uint64_t idx = dz_calc_max_qpos(self, forefront);							/* vector index, cell index */
+	uint64_t idx = dz_calc_max_qpos(forefront);							/* vector index, cell index */
 	uint64_t ref_length = 0, query_length = idx;
     
 	/* allocate aln object */
@@ -1884,13 +1883,14 @@ struct dz_alignment_s *dz_trace(
 
 	/* traceback loop */
 	#define _debug(_label) { \
-		debug("test %s, idx(%lu), rbase(%d, %c), qbase(%c), c(%d), e(%d), f(%d), s(%d), score(%d, %lu), diag(%d)", \
+		debug("test %s, idx(%lu), rbase(%d, %c), qbase(%c), c(%d), e(%d), f(%d), s(%d), score(%d, %d, %lu), diag(%d)", \
 			#_label, idx, rch, '-', '-', /*"ACGTNNNNNNNNNNNN"[rch & 0xff], "ANNNCNNNGNNNTNNN"[query->arr[idx]],*/ \
 			score, _s(e, cap, idx), _s(f, cap, idx), _s(s, pcap, idx - 1), \
 			_pair_score(self, query, rch, idx), (uint64_t)dz_pair_eq(self, query, rch, idx), \
-			(score == (_s(s, pcap, idx - 1) + _pair_score(self, query, rch, idx)))); \
+			dz_end_bonus(self, query, idx), (score == (_s(s, pcap, idx - 1) + _pair_score(self, query, rch, idx)))); \
 	}
 	#define _match(_idx) { \
+        _debug(M); \
         if(dz_inside(pcap->r.spos, _vector_idx(idx - 1), pcap->r.epos) \
            && score == (_s(s, pcap, idx - 1) + _pair_score(self, query, rch, idx))) { \
             uint64_t eq = dz_pair_eq(self, query, rch, idx); \
@@ -1921,7 +1921,12 @@ struct dz_alignment_s *dz_trace(
 	}
 
 	uint32_t rch = _load_prev_cap(s, score, _idx_asc);
-	while(1) { _debug(M); _match(_idx_asc); _ins(_idx_asc); _del(_idx_asc); dz_trap(); }
+	while(1) {
+        _match(_idx_asc);
+        _ins(_idx_asc);
+        _del(_idx_asc);
+        dz_trap();
+    }
 _trace_tail:;
 	span++;				/* adjust root span */
 
@@ -1937,7 +1942,7 @@ _trace_tail:;
 	aln->path_length = path_length;
 	aln->ref_length = ref_length;
 	aln->query_length = query_length;
-	aln->rrem = dz_calc_max_rpos(self, forefront);
+	aln->rrem = dz_calc_max_rpos(forefront);
 	aln->score = forefront->max;
 	aln->mismatch_count = cnt[0];
 	aln->match_count = cnt[1];
