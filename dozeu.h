@@ -26,9 +26,6 @@
  *   2. Myers bit vector (describes vertical (horizontal) tiling)
  *     Gene Myers, A fast bit-vector algorithm for approximate string matching based on dynamic programming, JACM (1999)
  */
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /* make sure POSIX APIs are properly activated */
 #if defined(__linux__) && !defined(_POSIX_C_SOURCE)
@@ -39,14 +36,19 @@ extern "C" {
 #  define _BSD_SOURCE
 #endif
 
+#define SIMDE_ENABLE_NATIVE_ALIASES
+#include "simde/x86/sse4.1.h"
+
+// Only turn on extern "C" after including code that can use C++ features.
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <assert.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
-
-#define SIMDE_ENABLE_NATIVE_ALIASES
-#include "simde/x86/sse4.1.h"
 
 #ifndef DZ_INCLUDE_ONCE
 
@@ -2016,6 +2018,9 @@ unittest( "trace" ) {
 #if !defined(DZ_QUAL_ADJ) && !defined(DZ_UNITTESTS_INCLUDED)
 #define DZ_UNITTESTS_INCLUDED
 #endif
+
+#undef SIMDE_ENABLE_NATIVE_ALIASES
+
 /**
  * end of dozeu.h
  */
