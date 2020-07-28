@@ -1424,6 +1424,7 @@ unittest() {
 	__m128i const xtv = _mm_set1_epi16(w.inc - xt);	/* next offset == current max thus X-drop threshold is always -xt */ \
 	/* until the bottommost vertically placed band... */ \
 	uint32_t sspos = w.r.spos;					/* save spos on the stack */ \
+    uint64_t first_drop = w.r.epos;\
 	for(uint64_t p = w.r.spos; p < w.r.epos; p++) { \
 		_load_vector(&pdp[p]); \
         _update_vector(p); \
@@ -1433,12 +1434,19 @@ unittest() {
 			if(p == w.r.spos) { \
                 w.r.spos++; cdp--; continue; \
             } else { \
-                 w.r.epos = p; goto dz_pp_cat(_forefront_, __LINE__); \
+                first_drop = dz_min2(p, first_drop); \
             } \
-		} \
+        } else { \
+            first_drop = w.r.epos; /* reset the xdrop to indicate that any xdrops we found are not contiguous */ \
+        } \
 		_store_vector(&cdp[p]); \
 	} \
-	/* if reached the forefront of the query sequence, finish the extension */ \
+    if (first_drop < w.r.epos) { \
+        /* we xdropped a contiguous block of vectors at the end of this column */\
+        w.r.epos = first_drop; \
+        goto dz_pp_cat(_forefront_, __LINE__); \
+    } \
+    /* if reached the forefront of the query sequence, finish the extension */ \
 	if(w.r.epos < query->blen) { \
 		/* forefront extension; clip the column length if too long */ \
 		__m128i e = minv, s = minv; _update_vector(w.r.epos); \
