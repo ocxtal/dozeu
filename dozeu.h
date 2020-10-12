@@ -254,7 +254,7 @@ struct dz_mem_s { struct dz_mem_block_s blk; struct dz_stack_s stack; };
 
 struct dz_s {
     int8_t matrix[32];
-    uint16_t giv[8], gev[8], riv[8], rev[8], bonus, _pad[7]; // padding ensures memory alignment
+    uint16_t giv[8], gev[8], riv[8], rev[8]; // padding ensures memory alignment
     int8_t protein_matrix[];
 };
 dz_static_assert(sizeof(struct dz_s) % sizeof(__m128i) == 0);
@@ -686,9 +686,7 @@ struct dz_s *dz_init_intl(
     int8_t const *qual_adj_score_matrix, /* series of DZ_NUM_QUAL_SCORES adjusted score matrices for each phred base qual (no offset) */
 #endif
 	uint16_t gap_open,				/* gap penalties in positive */
-	uint16_t gap_extend,
-	//uint64_t max_gap_len,			/* as X-drop threshold */
-	uint16_t full_length_bonus)		/* end-to-end mapping bonus; only activated when compiled with -DDZ_FULL_LENGTH_BONUS */
+	uint16_t gap_extend)
 {
 	/*
 	static uint8_t const transpose[16] __attribute__(( aligned(16) )) = {
@@ -742,17 +740,8 @@ struct dz_s *dz_init_intl(
 	__m128i const gev = _mm_set1_epi16(gap_extend);
 	_mm_store_si128((__m128i *)self->giv, giv);
 	_mm_store_si128((__m128i *)self->gev, gev);
-    // TODO: see if i can remove this to cut down on state
-	//self->xt = 0;			/* X-drop threshold */
-	self->bonus = full_length_bonus;
-	//self->max_gap_len = max_gap_len;			/* save raw value */
-	debug("gi(%u), ge(%u), full_length_bonus(%u)", gap_open, gap_extend, self->bonus);
+	debug("gi(%u), ge(%u)", gap_open, gap_extend);
 
-    // TODO: i'm pretty sure this cap is extraneous and never used
-	///* create root head */
-	//struct dz_cap_s *cap = (struct dz_cap_s *)dz_mem_malloc(mem, sizeof(struct dz_cap_s));
-	//_mm_store_si128((__m128i *)cap, _mm_setzero_si128());
-    
     /* initialize and memoize the vectors we need to compute the root */
 	__m128i riv = _mm_setr_epi16(
         0,
@@ -795,14 +784,12 @@ struct dz_s *dz_init(
     int8_t const *qual_adj_score_matrix, /* series of DZ_NUM_QUAL_SCORES adjusted score matrices for each phred base qual (no offset) */
 #endif
 	uint16_t gap_open,
-	uint16_t gap_extend,
-	//uint64_t max_gap_len,
-	uint16_t full_length_bonus)
+	uint16_t gap_extend)
 {
 #ifdef DZ_QUAL_ADJ
-    return(dz_qual_adj_init_intl(score_matrix, qual_adj_score_matrix, gap_open, gap_extend, full_length_bonus));
+    return(dz_qual_adj_init_intl(score_matrix, qual_adj_score_matrix, gap_open, gap_extend));
 #else
-	return(dz_init_intl(score_matrix, gap_open, gap_extend, full_length_bonus));
+	return(dz_init_intl(score_matrix, gap_open, gap_extend));
 #endif
 }
 
@@ -1021,7 +1008,7 @@ static int8_t const dz_unittest_score_matrix[DZ_MAT_SIZE * DZ_MAT_SIZE] = {
 
 #ifndef DZ_UNITTEST_SCORE_PARAMS
 #ifdef DZ_FULL_LENGTH_BONUS
-#define DZ_UNITTEST_SCORE_PARAMS	dz_unittest_score_matrix, 5, 1, 0
+#define DZ_UNITTEST_SCORE_PARAMS	dz_unittest_score_matrix, 5, 1
 #else
 #define DZ_UNITTEST_SCORE_PARAMS	dz_unittest_score_matrix, 5, 1
 #endif
@@ -1060,7 +1047,10 @@ struct dz_query_s *dz_pack_query_forward(
 #ifdef DZ_QUAL_ADJ
     uint8_t const *qual,
 #endif
-	 size_t qlen)
+#ifdef DZ_FULL_LENGTH_BONUS
+    int8_t full_length_bonus,
+#endif
+    size_t qlen)
 {
 	size_t const L = sizeof(__m128i) / sizeof(uint16_t);
     // TODO: qual: make sure I'm doing this right
@@ -1080,8 +1070,9 @@ struct dz_query_s *dz_pack_query_forward(
     /*
 	 * tentative support of full-length bonus; precaclulated bonus score is saved at q->bonus[0] and q->bonus[1]; [0] for non-tail vector and [1] for tail vector
 	 */
-	q->bonus[L + (qlen % L)] = self->bonus;
-
+    #ifdef DZ_FULL_LENGTH_BONUS
+        q->bonus[L + (qlen % L)] = full_length_bonus;
+    #endif
 	/*
 	 * ASCII to 2-bit conversion table (shifted by two bits to be used as the upper (row) shuffle index)
 	 * @ABC_DEFG_HIJK_LMNO
@@ -1155,6 +1146,9 @@ struct dz_query_s *dz_pack_query_reverse(
 #ifdef DZ_QUAL_ADJ
     uint8_t const *qual,
 #endif
+#ifdef DZ_FULL_LENGTH_BONUS
+    int8_t full_length_bonus,
+#endif
     size_t qlen)
 {
 	size_t const L = sizeof(__m128i) / sizeof(uint16_t);
@@ -1171,7 +1165,9 @@ struct dz_query_s *dz_pack_query_reverse(
 		.q = query,
 		.bonus = { 0 }
 	};
-	q->bonus[L + (qlen % L)] = self->bonus;
+    #ifdef DZ_FULL_LENGTH_BONUS
+        q->bonus[L + (qlen % L)] = full_length_bonus;
+    #endif
 
 	static uint8_t const conv[16] __attribute__(( aligned(16) )) = {
 		#ifdef DZ_NUCL_ASCII
@@ -1234,7 +1230,11 @@ struct dz_query_s *dz_pack_query_reverse(
 static __dz_vectorize
 struct dz_query_s *dz_pack_query_forward(
 	struct dz_s *self,
-	char const *query, size_t qlen)
+	char const *query,
+#ifdef DZ_FULL_LENGTH_BONUS
+    int8_t full_length_bonus,
+#endif
+    size_t qlen)
 {
 	size_t const L = sizeof(__m128i) / sizeof(uint16_t);
 	struct dz_query_s *q = (struct dz_query_s *)dz_mem_malloc(dz_mem(self), sizeof(struct dz_query_s) + DZ_MAT_SIZE * dz_roundup(qlen + 1, L) + sizeof(__m128i));
@@ -1243,7 +1243,10 @@ struct dz_query_s *dz_pack_query_forward(
 		.q = query,
 		.bonus = { 0 }
 	};
-	q->bonus[L + (qlen % L)] = self->bonus;
+    
+    #ifdef DZ_FULL_LENGTH_BONUS
+        q->bonus[L + (qlen % L)] = full_length_bonus;
+    #endif
 
 	for(uint64_t j = 0; j < DZ_MAT_SIZE; j++) {
 		size_t const clen = dz_roundup(qlen + 1, L);
@@ -1280,7 +1283,11 @@ struct dz_query_s *dz_pack_query_forward(
 static __dz_vectorize
 struct dz_query_s *dz_pack_query_reverse(
 	struct dz_s *self,
-	char const *query, size_t qlen)
+	char const *query,
+#ifdef DZ_FULL_LENGTH_BONUS
+    int8_t full_length_bonus,
+#endif
+    size_t qlen)
 {
 	size_t const L = sizeof(__m128i) / sizeof(uint16_t);
 	struct dz_query_s *q = (struct dz_query_s *)dz_mem_malloc(dz_mem(self), sizeof(struct dz_query_s) + DZ_MAT_SIZE * dz_roundup(qlen + 1, L) + sizeof(__m128i));
@@ -1289,7 +1296,9 @@ struct dz_query_s *dz_pack_query_reverse(
 		.q = query,
 		.bonus = { 0 }
 	};
-	q->bonus[L + (qlen % L)] = self->bonus;
+    #ifdef DZ_FULL_LENGTH_BONUS
+        q->bonus[L + (qlen % L)] = full_length_bonus;
+    #endif
 
 	for(uint64_t j = 0; j < DZ_MAT_SIZE; j++) {
 		size_t const clen = dz_roundup(qlen + 1, L);
@@ -1341,19 +1350,22 @@ struct dz_query_s *dz_pack_query(
 #ifdef DZ_QUAL_ADJ
     const uint8_t *qual,
 #endif
+#ifdef DZ_FULL_LENGTH_BONUS
+    int8_t full_length_bonus,
+#endif
     int64_t qlen)
 {
 	if(qlen >= 0) {
 #ifdef DZ_QUAL_ADJ
-        return(dz_qual_adj_pack_query_forward(self, query, qual, (size_t)qlen));
+        return(dz_qual_adj_pack_query_forward(self, query, qual, full_length_bonus, (size_t)qlen));
 #else
-        return(dz_pack_query_forward(self, query, (size_t)qlen));
+        return(dz_pack_query_forward(self, query, full_length_bonus, (size_t)qlen));
 #endif
 	} else {
 #ifdef DZ_QUAL_ADJ
-        return(dz_qual_adj_pack_query_reverse(self, &query[qlen], &qual[qlen], (size_t)-qlen));
+        return(dz_qual_adj_pack_query_reverse(self, &query[qlen], &qual[qlen], full_length_bonus, (size_t)-qlen));
 #else
-        return(dz_pack_query_reverse(self, &query[qlen], (size_t)-qlen));
+        return(dz_pack_query_reverse(self, &query[qlen], full_length_bonus, (size_t)-qlen));
 #endif
 	}
 }
@@ -1364,7 +1376,12 @@ unittest() {
 	struct dz_s *dz = dz_init(DZ_UNITTEST_SCORE_PARAMS);
 	ut_assert(dz != NULL);
 
-	struct dz_query_s *q = dz_pack_query(dz, dz_unittest_query, dz_unittest_query_length);
+	struct dz_query_s *q = dz_pack_query(dz, dz_unittest_query,
+#ifdef DZ_FULL_LENGTH_BONUS
+                                         0,
+#endif
+                                         
+                                         dz_unittest_query_length);
 	dz_unused(q);
 	dz_destroy(dz);
 }
@@ -1597,6 +1614,9 @@ unittest( "extend.base" ) {
 
 	for(size_t trial = 0; trial < 3; trial++) {
 		struct dz_query_s const *q = dz_pack_query(dz, dz_unittest_query,
+#ifdef DZ_FULL_LENGTH_BONUS
+                                                   0,
+#endif
 			  trial == 0 ? dz_unittest_query_length
 			: trial == 1 ? 3
 			:              10
@@ -1656,7 +1676,11 @@ unittest( "extend.base.revcomp" ) {
 		size_t length = trial == 0 ? dz_unittest_query_length
 					  : trial == 1 ? 3
 					  :              10;
-		struct dz_query_s const *q = dz_pack_query_reverse(dz, &revcomp[dz_unittest_query_length - length], length);
+		struct dz_query_s const *q = dz_pack_query_reverse(dz, &revcomp[dz_unittest_query_length - length],
+#ifdef DZ_FULL_LENGTH_BONUS
+                                                           0,
+#endif
+                                                           length);
 		struct dz_forefront_s const *forefront = NULL;
 
 		/* nothing occurs */
@@ -1706,6 +1730,9 @@ unittest( "extend.small" ) {
 
 	for(size_t trial = 0; trial < 4; trial++) {
 		struct dz_query_s const *q = dz_pack_query(dz, dz_unittest_query,
+#ifdef DZ_FULL_LENGTH_BONUS
+                                                   0,
+#endif
 			  trial == 0 ? dz_unittest_query_length
 			: trial == 1 ? 3
 			: trial == 2 ? 4
@@ -1992,7 +2019,11 @@ unittest( "trace" ) {
 	struct dz_s *dz = dz_init(DZ_UNITTEST_SCORE_PARAMS);
 	ut_assert(dz != NULL);
 
-	struct dz_query_s *q = dz_pack_query(dz, dz_unittest_query, dz_unittest_query_length);
+	struct dz_query_s *q = dz_pack_query(dz, dz_unittest_query,
+#ifdef DZ_FULL_LENGTH_BONUS
+                                         0,
+#endif
+                                         dz_unittest_query_length);
 	struct dz_forefront_s const *forefront = NULL;
 	struct dz_alignment_s *aln = NULL;
 
