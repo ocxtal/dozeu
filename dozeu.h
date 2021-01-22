@@ -1440,8 +1440,9 @@ unittest() {
 	__m128i f = minv, ps = _mm_set1_epi16(init_s), maxv = _mm_set1_epi16(INT16_MIN), pts = _mm_set1_epi16(INT16_MIN); \
 	__m128i const xtv = _mm_set1_epi16(w.inc - xt);	/* next offset == current max thus X-drop threshold is always -xt */ \
 	/* until the bottommost vertically placed band... */ \
-	uint32_t sspos = w.r.spos;					/* save spos on the stack */ \
     uint64_t first_drop = w.r.epos;\
+    uint64_t colspos = w.r.spos;\
+    uint64_t colepos = w.r.epos;\
 	for(uint64_t p = w.r.spos; p < w.r.epos; p++) { \
 		_load_vector(&pdp[p]); \
         _update_vector(p); \
@@ -1449,7 +1450,7 @@ unittest() {
 			/* drop either leading or trailing vector, skip the forefront extension when the forefront is clipped */ \
             pts = _mm_set1_epi16(INT16_MIN); \
 			if(p == w.r.spos) { \
-                w.r.spos++; cdp--; continue; \
+                w.r.spos++; \
             } else { \
                 first_drop = dz_min2(p, first_drop); \
             } \
@@ -1469,13 +1470,13 @@ unittest() {
 		__m128i e = minv, s = minv; _update_vector(w.r.epos); \
 		do { \
 			if(_test_xdrop(s, xtv)) { break; } \
-			_store_vector(&cdp[w.r.epos]); w.r.epos++; \
+            _store_vector(&cdp[w.r.epos]); w.r.epos++; colepos++; \
 			f = _mm_subs_epi16(f, gev8); s = _mm_subs_epi16(s, gev8); \
 		} while(w.r.epos < query->blen); \
 	} \
 dz_pp_cat(_forefront_, __LINE__):; \
 	/* create cap object that contains [spos, epos) range (for use in the traceback routine) */ \
-	struct dz_cap_s *cap = _end_column(cdp, w.r.spos, w.r.epos); \
+	struct dz_cap_s *cap = _end_column(cdp, colspos, colepos); \
 	int32_t inc = _hmax_vector(maxv); \
 	if(dz_cmp_max(inc, w.inc)) { w.inc = inc; w.mcap = cap; }/* update max; the actual score (absolute score accumulated from the origin) is expressed as max + inc; 2 x cmov */ \
 	/* FIXME: rescue overflow */ \
