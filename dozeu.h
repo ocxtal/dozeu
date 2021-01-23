@@ -207,10 +207,12 @@ struct dz_cap_s {											/* followed by dz_forefront_s; spos and epos are sha
 	uint32_t rch; int32_t rrem;
 };
 struct dz_forefront_s {
-	struct dz_range_s r;
+	struct dz_range_s r; // the range that applies to the preceding column
 	uint32_t rid;
 	int32_t rlen;
+    struct dz_range_s fr; // the range that should continue forward
 	uint32_t rsum, rcnt; int32_t max, inc;
+    uint8_t _pad[8];
 	struct dz_query_s const *query;
 	struct dz_cap_s const *mcap;
 };
@@ -510,7 +512,7 @@ unittest() {
 	/* push cap info */ \
 	struct dz_cap_s *cap = dz_cap(dz_mem(self)->stack.top); \
 	/* calculate sizes */ \
-	size_t next_req = _calc_next_size((_w).r.spos, (_w).r.epos, 0); \
+	size_t next_req = _calc_next_size((_w).fr.spos, (_w).fr.epos, 0); \
 	/* allocate from heap */ \
 	cap->rch = (_rch);							/* record rch for the next column */ \
 	cap->rrem = (_rlen);						/* record rlen for use in traceback */ \
@@ -519,9 +521,9 @@ unittest() {
 		dz_mem_add_stack(dz_mem(self), next_req); /* 0); }*/ \
 		cap = _init_cap(0, _rch, &cap, 1); \
 	} \
-	debug("create column(%p), [%u, %u), span(%u), rrem(%ld), max(%d), inc(%d)", cap, (_w).r.spos, (_w).r.epos, (_w).r.epos - (_w).r.spos, (_rlen), (_w).max, (_w).inc); \
+	debug("create column(%p), [%u, %u), span(%u), rrem(%ld), max(%d), inc(%d)", cap, (_w).fr.spos, (_w).fr.epos, (_w).r.epos - (_w).r.spos, (_rlen), (_w).max, (_w).inc); \
 	/* return array pointer */ \
-	(struct dz_swgv_s *)(cap + 1) - (_w).r.spos; \
+	(struct dz_swgv_s *)(cap + 1) - (_w).fr.spos; \
 })
 #define _end_column(_p, _spos, _epos) ({ \
 	/* write back the stack pointer and return a cap */ \
@@ -534,16 +536,16 @@ unittest() {
 #define _end_matrix(_p, _wp, _rrem) ({ \
 	/* create forefront object */ \
 	struct dz_forefront_s *forefront = dz_forefront(&(dz_swgv(_p))[(_wp)->r.epos]); \
-	/* if((_wp)->r.spos >= (_wp)->r.epos) { (_wp)->r.epos = 0; } */ \
 	forefront->rid = (_wp)->rid; \
 	forefront->rlen = (_wp)->rlen; \
+    forefront->fr = (_wp)->fr; \
 	forefront->rsum = (_wp)->rsum + ((_wp)->rlen < 0 ? -1 : 1) * ((_wp)->rlen - (_rrem)); \
 	forefront->rcnt = (_wp)->rcnt + 1; \
 	forefront->max = (_wp)->max + (_wp)->inc; \
 	forefront->inc = (_wp)->inc; \
 	forefront->query = (_wp)->query; \
 	forefront->mcap = (_wp)->mcap; \
-	debug("create forefront(%p), [%u, %u), max(%d), inc(%d), rlen(%d), rrem(%d)", forefront, (_wp)->r.spos, (_wp)->r.epos, (_wp)->max, (_wp)->inc, (int32_t)(_wp)->rlen, (int32_t)(_rrem)); \
+	debug("create forefront(%p), [%u, %u), [%u, %u), max(%d), inc(%d), rlen(%d), query(%p), rrem(%d)", forefront, (_wp)->r.spos, (_wp)->r.epos, (_wp)->fr.spos, (_wp)->fr.epos, (_wp)->max, (_wp)->inc, (int32_t)(_wp)->rlen, (_wp)->query, (int32_t)(_rrem)); \
 	/* write back stack pointer */ \
 	dz_mem(self)->stack.top = (uint8_t *)(forefront + 1); \
 	/* return the forefront pointer */ \
@@ -836,13 +838,13 @@ struct dz_alignment_init_s dz_align_init(
     size_t const L = sizeof(__m128i) / sizeof(uint16_t);
     size_t max_gap_vec_len = dz_roundup(max_gap_len, L) / L;
     
-    struct dz_forefront_s w = { { 0, (uint32_t) max_gap_vec_len}, 0, 0, 0, 0, 0, 0, NULL, NULL };
+    struct dz_forefront_s w = { { 0, (uint32_t) max_gap_vec_len}, 0, 0, { 0, (uint32_t) max_gap_vec_len}, 0, 0, 0, 0, NULL, NULL };
     struct dz_forefront_s *a = &w;
     
     /* malloc the first column */
     struct dz_swgv_s *dp = _begin_column_head(0, max_gap_vec_len, 0, &a, 0);
     
-    uint16_t xt = self->giv[0] + self->gev[0] * max_gap_len;
+    int16_t xt = self->giv[0] + self->gev[0] * max_gap_len;
     // calculate the x-drop threshold for this gap length
     __m128i xtv = _mm_set1_epi16(-xt);
         
@@ -863,6 +865,7 @@ struct dz_alignment_init_s dz_align_init(
         }
         s = _mm_subs_epi16(s, _mm_slli_epi16(_mm_load_si128((__m128i const *)self->gev), 3));
     }
+    w.fr.epos = w.r.epos;
     
     /* done; create forefront object */
     _end_column(dp, w.r.spos, w.r.epos);
@@ -1391,16 +1394,16 @@ unittest() {
 #define _merge_column(w, adj, forefronts, n_forefronts, query, init_s) ({ \
 	for(size_t i = 0; i < n_forefronts; i++) { \
 		/* update max and pos */ \
-		w.r.spos = dz_min2(w.r.spos, forefronts[i]->r.spos); \
-		w.r.epos = dz_max2(w.r.epos, forefronts[i]->r.epos); \
+		w.fr.spos = dz_min2(w.fr.spos, forefronts[i]->fr.spos); \
+		w.fr.epos = dz_max2(w.fr.epos, forefronts[i]->fr.epos); \
 		w.rsum = dz_max2(w.rsum, forefronts[i]->rsum); \
 		w.rcnt = dz_max2(w.rcnt, forefronts[i]->rcnt); \
 		if(init_s != 0) { w.max = dz_max2(w.max, forefronts[i]->max); } \
-		debug("i(%lu, %p), [%u, %u), inc(%d), max(%d)", i, forefronts[i], forefronts[i]->r.spos, forefronts[i]->r.epos, forefronts[i]->inc, forefronts[i]->max); \
+		debug("i(%lu, %p), r [%u, %u), fr [%u, %u),  inc(%d), max(%d)", i, forefronts[i], forefronts[i]->r.spos, forefronts[i]->r.epos, forefronts[i]->fr.spos, forefronts[i]->fr.epos, forefronts[i]->inc, forefronts[i]->max); \
 	} \
-	w.r.spos = w.r.spos > INT32_MAX ? 0 : w.r.spos; \
-	w.r.epos = dz_min2(w.r.epos, query->blen);						/* make sure epos and p-iteration index is no larger than blen */ \
-	debug("start extension [%u, %u), inc(%d), max(%d), stack(%p, %p), rlen(%d)", w.r.spos, w.r.epos, w.inc, w.max, dz_mem(self)->stack.top, dz_mem(self)->stack.end, (int32_t)rlen); \
+	w.fr.spos = w.fr.spos > INT32_MAX ? 0 : w.fr.spos; \
+	w.fr.epos = dz_min2(w.fr.epos, query->blen);						/* make sure epos and p-iteration index is no larger than blen */ \
+	debug("start extension [%u, %u), inc(%d), max(%d), stack(%p, %p), rlen(%d)", w.fr.spos, w.fr.epos, w.inc, w.max, dz_mem(self)->stack.top, dz_mem(self)->stack.end, (int32_t)rlen); \
 	if(init_s != 0) { \
 		for(size_t i = 0; i < n_forefronts; i++) { \
 			adj[i] = w.max - (forefronts[i]->max - forefronts[i]->inc);	/* base = max - inc */ \
@@ -1408,16 +1411,16 @@ unittest() {
 		} \
 	} \
 	/* once; merge incoming vectors */ \
-	struct dz_swgv_s *cdp = _begin_column_head(w.r.spos, w.r.epos, w.max, forefronts, n_forefronts);	/* allocate memory for the first column */ \
-	for(uint64_t p = w.r.spos; p < w.r.epos; p++) { \
+	struct dz_swgv_s *cdp = _begin_column_head(w.fr.spos, w.fr.epos, w.max, forefronts, n_forefronts);	/* allocate memory for the first column */ \
+	for(uint64_t p = w.fr.spos; p < w.fr.epos; p++) { \
 		/* memset(cdp, 0xff, sizeof(struct dz_swgv_s) * (w.r.epos - w.r.spos)); */ \
 		__m128i const e = _mm_set1_epi16(INT16_MIN), f = e, s = e; _store_vector(&cdp[p]); \
 	} \
 	/* paste the last vectors */ \
 	for(size_t i = 0; i < n_forefronts; i++) { \
-		struct dz_swgv_s const *tdp = (struct dz_swgv_s const *)forefronts[i] - forefronts[i]->r.epos; \
+		struct dz_swgv_s const *tdp = dz_cswgv(forefronts[i]) - forefronts[i]->r.epos; \
 		__m128i const adjv = _mm_set1_epi16(init_s == 0 ? 0 : adj[i]); \
-		for(uint64_t p = forefronts[i]->r.spos; p < forefronts[i]->r.epos; p++) { \
+		for(uint64_t p = forefronts[i]->fr.spos; p < forefronts[i]->fr.epos; p++) { \
 			/* adjust offset */ \
 			__m128i e = _mm_subs_epi16(_mm_load_si128(&tdp[p].e), adjv); \
 			__m128i f = _mm_subs_epi16(_mm_load_si128(&tdp[p].f), adjv); \
@@ -1429,7 +1432,8 @@ unittest() {
 			print_vector(s); \
 		} \
 	} \
-	_end_column(cdp, w.r.spos, w.r.epos); \
+    w.r = w.fr;\
+	_end_column(cdp, w.fr.spos, w.fr.epos); \
 	cdp; \
 })
 #define _fill_column(w, pdp, query, rt, rrem, xt, init_s) ({ \
@@ -1440,43 +1444,43 @@ unittest() {
 	__m128i f = minv, ps = _mm_set1_epi16(init_s), maxv = _mm_set1_epi16(INT16_MIN), pts = _mm_set1_epi16(INT16_MIN); \
 	__m128i const xtv = _mm_set1_epi16(w.inc - xt);	/* next offset == current max thus X-drop threshold is always -xt */ \
 	/* until the bottommost vertically placed band... */ \
-    uint64_t first_drop = w.r.epos;\
-    uint64_t colspos = w.r.spos;\
-    uint64_t colepos = w.r.epos;\
-	for(uint64_t p = w.r.spos; p < w.r.epos; p++) { \
+    uint64_t first_drop = w.fr.epos;\
+    /* we want to remember the backward facing range even if we x-drop the forward facing range */ \
+    w.r = w.fr; \
+	for(uint64_t p = w.fr.spos; p < w.fr.epos; p++) { \
 		_load_vector(&pdp[p]); \
         _update_vector(p); \
 		if(dz_unlikely(_test_xdrop(s, xtv))) {	/* mark _unlikely to move out of the core loop */ \
 			/* drop either leading or trailing vector, skip the forefront extension when the forefront is clipped */ \
             pts = _mm_set1_epi16(INT16_MIN); \
-			if(p == w.r.spos) { \
-                w.r.spos++; \
+			if(p == w.fr.spos) { \
+                w.fr.spos++; \
             } else { \
                 first_drop = dz_min2(p, first_drop); \
             } \
         } else { \
-            first_drop = w.r.epos; /* reset the xdrop to indicate that any xdrops we found are not contiguous */ \
+            first_drop = w.fr.epos; /* reset the xdrop to indicate that any xdrops we found are not contiguous */ \
         } \
 		_store_vector(&cdp[p]); \
 	} \
-    if (first_drop < w.r.epos) { \
+    if (first_drop < w.fr.epos) { \
         /* we xdropped a contiguous block of vectors at the end of this column */\
-        w.r.epos = first_drop; \
+        w.fr.epos = first_drop; \
         goto dz_pp_cat(_forefront_, __LINE__); \
     } \
     /* if reached the forefront of the query sequence, finish the extension */ \
-	if(w.r.epos < query->blen) { \
+	if(w.fr.epos < query->blen) { \
 		/* forefront extension; clip the column length if too long */ \
-		__m128i e = minv, s = minv; _update_vector(w.r.epos); \
+		__m128i e = minv, s = minv; _update_vector(w.fr.epos); \
 		do { \
 			if(_test_xdrop(s, xtv)) { break; } \
-            _store_vector(&cdp[w.r.epos]); w.r.epos++; colepos++; \
+            _store_vector(&cdp[w.fr.epos]); w.fr.epos++; w.r.epos++; \
 			f = _mm_subs_epi16(f, gev8); s = _mm_subs_epi16(s, gev8); \
-		} while(w.r.epos < query->blen); \
+		} while(w.fr.epos < query->blen); \
 	} \
 dz_pp_cat(_forefront_, __LINE__):; \
 	/* create cap object that contains [spos, epos) range (for use in the traceback routine) */ \
-	struct dz_cap_s *cap = _end_column(cdp, colspos, colepos); \
+	struct dz_cap_s *cap = _end_column(cdp, w.r.spos, w.r.epos); \
 	int32_t inc = _hmax_vector(maxv); \
 	if(dz_cmp_max(inc, w.inc)) { w.inc = inc; w.mcap = cap; }/* update max; the actual score (absolute score accumulated from the origin) is expressed as max + inc; 2 x cmov */ \
 	/* FIXME: rescue overflow */ \
@@ -1528,22 +1532,20 @@ struct dz_forefront_s const *dz_extend_intl(
 	__m128i const gev4 = _mm_slli_epi16(gev1, 2);
 	__m128i const gev8 = _mm_slli_epi16(gev1, 3);
 
-	struct dz_forefront_s w = { { UINT32_MAX, 0 }, 0, 0, 0, 0, 0, 0, NULL, NULL };	/* uint32_t spos, epos, max, inc; struct dz_query_s const *query; struct dz_cap_s const *cap; */
+    struct dz_forefront_s w = { { UINT32_MAX, 0 }, 0, 0, { UINT32_MAX, 0 }, 0, 0, 0, 0, NULL, NULL };	/* uint32_t spos, epos, max, inc; struct dz_query_s const *query; struct dz_cap_s const *cap; */
 	w.rlen = rlen;
 	w.rid = rid;
 	w.query = query;
-
 	/* first iterate over the incoming edge objects to get the current max */
 	uint64_t adj[n_forefronts];							/* keep variable length array out of statement expression to avoid a bug of icc */
 	struct dz_swgv_s *pdp = _merge_column(w, adj, forefronts, n_forefronts, query, init_s);
-
 	/* fetch the first base */
 	int64_t rrem = rlen, dir = rlen < 0 ? 1 : -1;
 	uint8_t const *rt = (uint8_t const *)&ref[rrem - (rlen < 0)];
 
-	while(rrem != 0 && w.r.spos < w.r.epos) {
+	while(rrem != 0 && w.fr.spos < w.fr.epos) {
 		pdp = _fill_column(w, pdp, query, rt, rrem, xt, init_s); rrem += dir;
-		debug("rrem(%d), [%u, %u)", rrem, w.r.spos, w.r.epos);
+		debug("rrem(%d), [%u, %u)", rrem, w.fr.spos, w.fr.epos);
 	}
 	return(_end_matrix(pdp, &w, rrem));					/* update max vector (pdp always points at the last vector) */
 }
@@ -1849,7 +1851,9 @@ uint64_t dz_calc_max_pos(struct dz_forefront_s const *forefront)
 		cap = pcap; pcap = _unwind_cap(cap); \
 		debug("idx(%lu), cap(%p), pcap(%p), [%u, %u)", idx, cap, pcap, pcap->r.spos, pcap->r.epos); \
 		/* escape if not head */ \
-		if(dz_likely(!_is_head(pcap))) { break; } \
+		if(dz_likely(!_is_head(pcap))) { \
+            break; \
+        } \
 		/* escape if root */ \
 		debug("head, n_forefronts(%u)", dz_chead(pcap)->n_forefronts); \
 		if(pcap->rrem == 0) { debug("reached root"); goto _trace_tail; } \
@@ -1890,7 +1894,6 @@ struct dz_alignment_s *dz_trace(
 {
 	size_t const L = sizeof(__m128i) / sizeof(uint16_t);
     if(forefront->mcap == NULL) { debug("mcap is null"); return(NULL); }
-
 	/* detect pos */
 	uint64_t idx = dz_calc_max_qpos(forefront);							/* vector index, cell index */
 	uint64_t ref_length = 0, query_length = idx;
