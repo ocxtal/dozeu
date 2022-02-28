@@ -283,22 +283,22 @@ dz_static_assert(sizeof(struct dz_s) % sizeof(__m128i) == 0);
 }
 #define print_vector8(v) { \
 debug("%s (%d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d)", #v, \
-    (int)_mm_extract_epi8(v, 15), \
-    (int)_mm_extract_epi8(v, 14), \
-    (int)_mm_extract_epi8(v, 13), \
-    (int)_mm_extract_epi8(v, 12), \
-    (int)_mm_extract_epi8(v, 11), \
-    (int)_mm_extract_epi8(v, 10), \
-    (int)_mm_extract_epi8(v, 9), \
-    (int)_mm_extract_epi8(v, 8), \
-    (int)_mm_extract_epi8(v, 7), \
-    (int)_mm_extract_epi8(v, 6), \
-    (int)_mm_extract_epi8(v, 5), \
-    (int)_mm_extract_epi8(v, 4), \
-    (int)_mm_extract_epi8(v, 3), \
-    (int)_mm_extract_epi8(v, 2), \
-    (int)_mm_extract_epi8(v, 1), \
-    (int)_mm_extract_epi8(v, 0)); \
+    (int)(int8_t)_mm_extract_epi8(v, 15), \
+    (int)(int8_t)_mm_extract_epi8(v, 14), \
+    (int)(int8_t)_mm_extract_epi8(v, 13), \
+    (int)(int8_t)_mm_extract_epi8(v, 12), \
+    (int)(int8_t)_mm_extract_epi8(v, 11), \
+    (int)(int8_t)_mm_extract_epi8(v, 10), \
+    (int)(int8_t)_mm_extract_epi8(v, 9), \
+    (int)(int8_t)_mm_extract_epi8(v, 8), \
+    (int)(int8_t)_mm_extract_epi8(v, 7), \
+    (int)(int8_t)_mm_extract_epi8(v, 6), \
+    (int)(int8_t)_mm_extract_epi8(v, 5), \
+    (int)(int8_t)_mm_extract_epi8(v, 4), \
+    (int)(int8_t)_mm_extract_epi8(v, 3), \
+    (int)(int8_t)_mm_extract_epi8(v, 2), \
+    (int)(int8_t)_mm_extract_epi8(v, 1), \
+    (int)(int8_t)_mm_extract_epi8(v, 0)); \
 }
 #else
 #define print_vector(v) ;
@@ -577,20 +577,31 @@ unittest() {
     __m128i const rv = _mm_set1_epi8(rch);
 
 #define _calc_score_profile(_i) ({ \
-    /* construct the within-matrix and between-matrix indexes and then combine them */ \
-    __m128i iv = _mm_or_si128(_mm_slli_epi16(_mm_cvtepi8_epi16(_mm_loadl_epi64((__m128i const *)&qarr[(_i) * L])), 5), \
-                              _mm_cvtepi8_epi16(_mm_and_si128(_mm_or_si128(rv, _mm_loadl_epi64((__m128i const *)&parr[(_i) * L])), _mm_set1_epi8(0x1f)))); \
-    /* get the scores from the quality matrices (unvectorized, unfortunately) */ \
-    int8_t const *qual_mat = dz_qual_matrix(self); \
-    /* TODO: qual: is this the right order? */ \
-    __m128i sc = _mm_setr_epi16(qual_mat[_mm_extract_epi16(iv, 0)], \
-                                qual_mat[_mm_extract_epi16(iv, 1)], \
-                                qual_mat[_mm_extract_epi16(iv, 2)], \
-                                qual_mat[_mm_extract_epi16(iv, 3)], \
-                                qual_mat[_mm_extract_epi16(iv, 4)], \
-                                qual_mat[_mm_extract_epi16(iv, 5)], \
-                                qual_mat[_mm_extract_epi16(iv, 6)], \
-                                qual_mat[_mm_extract_epi16(iv, 7)]); \
+    /* load qual and query index values */ \
+    __m128i qxv = _mm_cvtepi8_epi16(_mm_loadl_epi64((__m128i const *)&qarr[(_i) * L])); \
+    __m128i sxv = _mm_or_si128(rv, _mm_loadl_epi64((__m128i const *)&parr[(_i) * L])); /* note: left in 8-bit */\
+    __m128i sc; \
+    if (_mm_movemask_epi8(_mm_cmpeq_epi8(qxv, _mm_alignr_epi8(qxv, qxv, 2))) == 0xffff) { \
+        /* we have uniform quality values, so we can pull from just one matrix */ \
+        int8_t const *qual_mat = dz_qual_matrix(self) + 32 * (*((int16_t*)&qxv)); \
+        sc = _mm_cvtepi8_epi16(_mm_shuffle_epi8(_mm_load_si128((__m128i const *)qual_mat), sxv)); \
+    }\
+    else { \
+        /* combine the qual and sequence indexes */\
+        __m128i xv = _mm_or_si128(_mm_slli_epi16(qxv, 5), \
+                                  _mm_and_si128(_mm_cvtepi8_epi16(sxv), _mm_set1_epi16(0x1f)));\
+        print_vector(xv);\
+        /* get the scores from the quality matrices (unvectorized, unfortunately) */ \
+        int8_t const *qual_mat = dz_qual_matrix(self); \
+        sc = _mm_setr_epi16(qual_mat[_mm_extract_epi16(xv, 0)], \
+                            qual_mat[_mm_extract_epi16(xv, 1)], \
+                            qual_mat[_mm_extract_epi16(xv, 2)], \
+                            qual_mat[_mm_extract_epi16(xv, 3)], \
+                            qual_mat[_mm_extract_epi16(xv, 4)], \
+                            qual_mat[_mm_extract_epi16(xv, 5)], \
+                            qual_mat[_mm_extract_epi16(xv, 6)], \
+                            qual_mat[_mm_extract_epi16(xv, 7)]);\
+    } \
     print_vector(sc)\
     sc; \
 })
