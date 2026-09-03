@@ -1,0 +1,4 @@
+[submodule "simde"]
+	path = simde
+	url = https://github.com/nemequ/simde-no-tests
+	branch = 2931676
