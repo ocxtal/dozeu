@@ -213,6 +213,7 @@ struct dz_query_s {
     int16_t bonus[16];
     uint8_t arr[];
 };
+typedef struct dz_query_s dz_query_t;
 dz_static_assert(sizeof(struct dz_query_s) % sizeof(__m128i) == 0);
 
 /* node (reference) */
@@ -283,6 +284,7 @@ struct dz_forefront_s {
 	struct dz_query_s const *query;
 	struct dz_cap_s const *mcap;
 };
+typedef struct dz_forefront_s dz_forefront_t;
 /*
  * When initializing forefronts, we want to be able to fill in the pad without saying 0s everywhere.
  */
@@ -296,6 +298,7 @@ struct dz_alignment_init_s {
     struct dz_forefront_s const *root;
     uint16_t xt;
 };
+typedef struct dz_alignment_init_s dz_alignment_init_t;
                      
 dz_static_assert(sizeof(struct dz_swgv_s) % sizeof(__m128i) == 0);
 dz_static_assert(sizeof(struct dz_cap_s) % sizeof(__m128i) == 0);
@@ -321,6 +324,8 @@ struct dz_path_span_s {
 	uint32_t id;
 	uint32_t offset;
 };
+typedef struct dz_path_span_s dz_path_span_t;
+
 struct dz_alignment_s {
 	struct dz_path_span_s const *span;
 	uint8_t const *path;
@@ -328,6 +333,7 @@ struct dz_alignment_s {
 	int32_t rrem, score;
 	uint32_t mismatch_count, match_count, ins_count, del_count;
 };
+typedef struct dz_alignment_s dz_alignment_t;
 
 /* context (constants and working buffers) */
 
@@ -358,6 +364,7 @@ struct dz_s {
     uint16_t giv[8], gev[8], div[8], dev[8], riv[8], rev[8];
     int8_t protein_matrix[];
 };
+typedef struct dz_s dz_t;
 dz_static_assert(sizeof(struct dz_s) % sizeof(__m128i) == 0);
 #define dz_mem(_self)				( (struct dz_mem_s *)(_self) - 1 )
 /* get the base quality adjusted matrix (only valid if DZ_QUAL_ADJ is defined) */
