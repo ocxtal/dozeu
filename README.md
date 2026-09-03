@@ -52,7 +52,17 @@ dz_destroy(dz);
 
 `DZ_FULL_LENGTH_BONUS` enables the bonus argument used above. Without it, the query packers omit that argument. See `example.c`, `example.2bit.c`, and `example.protein.c` for complete graph examples.
 
-Define `DZ_QUAL_ADJ` before including `dozeu.h` to use the quality-adjusted API. Score matrices are supplied to `dz_qual_adj_init`, and qualities are supplied to the `dz_qual_adj_pack_query*` functions.
+For asymmetric gaps, use:
+
+```c
+struct dz_s *dz = dz_asym_init(
+    score_matrix,
+    ins_open, ins_extend,
+    del_open, del_extend
+);
+```
+
+Define `DZ_QUAL_ADJ` before including `dozeu.h` to use the quality-adjusted API. Score matrices are supplied to `dz_qual_adj_init` or `dz_qual_adj_asym_init`, and qualities are supplied to the `dz_qual_adj_pack_query*` functions.
 
 Build and run the examples with:
 

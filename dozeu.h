@@ -1201,7 +1201,6 @@ struct dz_s *dz_init_intl(
 	return(self);
 }
 
-#ifdef DZ_FULL_LENGTH_BONUS
 static __dz_vectorize
 #ifdef DZ_QUAL_ADJ
 struct dz_s *dz_qual_adj_init(
@@ -1222,29 +1221,27 @@ struct dz_s *dz_init(
 #endif
 }
 
-#else // DZ_FULL_LENGTH_BONUS
-  
 static __dz_vectorize
 #ifdef DZ_QUAL_ADJ
-struct dz_s *dz_qual_adj_init(
+struct dz_s *dz_qual_adj_asym_init(
 #else
-struct dz_s *dz_init(
+struct dz_s *dz_asym_init(
 #endif
 	int8_t const *score_matrix,
 #ifdef DZ_QUAL_ADJ
     int8_t const *qual_adj_score_matrix, /* series of DZ_NUM_QUAL_SCORES adjusted score matrices for each phred base qual (no offset) */
 #endif
-	uint16_t gap_open,
-	uint16_t gap_extend)//,
-	//uint64_t max_gap_len)
+	uint16_t ins_open,
+	uint16_t ins_extend,
+	uint16_t del_open,
+	uint16_t del_extend)
 {
 #ifdef DZ_QUAL_ADJ
-    return(dz_qual_adj_init_intl(score_matrix, qual_adj_score_matrix, gap_open, gap_extend, gap_open, gap_extend));
+    return(dz_qual_adj_init_intl(score_matrix, qual_adj_score_matrix, ins_open, ins_extend, del_open, del_extend));
 #else
-    return(dz_init_intl(score_matrix, gap_open, gap_extend, gap_open, gap_extend));
+    return(dz_init_intl(score_matrix, ins_open, ins_extend, del_open, del_extend));
 #endif
 }
-#endif // DZ_FULL_LENGTH_BONUS
 
 #ifndef DZ_INCLUDE_ONCE
                               
